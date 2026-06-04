@@ -16,7 +16,6 @@ pd.options.mode.chained_assignment = None
 # ==========================================
 print("Authenticating with Google Service Account...")
 
-# Fetch the secret key from GitHub's hidden environment
 creds_json = os.environ.get('GOOGLE_CREDENTIALS')
 if not creds_json:
     raise SystemExit("🛑 Error: GOOGLE_CREDENTIALS not found in GitHub Secrets.")
@@ -27,10 +26,11 @@ creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(creds)
 
 # ==========================================
-# 2. READ MASTER SHEET
+# 2. READ UNIFIED MASTER SHEET
 # ==========================================
-SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
-spreadsheet = gc.open_by_url(SHEET_URL)
+# UNIFIED URL: Everything is in the Dashboard Sheet now!
+SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
+spreadsheet = gc.open_by_url(SINGLE_SHEET_URL)
 
 MASTER_TAB_NAME = "Avg_Rupee_Volume_Master"
 TARGET_TAB_NAME = "Daily_Technicals"
