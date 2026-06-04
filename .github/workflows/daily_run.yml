@@ -32,8 +32,13 @@ jobs:
         run: python main.py
 
       - name: Run Master Scanner (Runs ONLY at 4:00 PM or Manual Play)
-        # This tells GitHub to skip this step if the time is 9:20 AM (3:50 UTC)
         if: github.event.schedule == '30 10 * * 1-5' || github.event_name == 'workflow_dispatch'
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: python master_scanner.py
+
+      - name: Run Watchlist Builder (Runs ONLY at 4:00 PM or Manual Play)
+        if: github.event.schedule == '30 10 * * 1-5' || github.event_name == 'workflow_dispatch'
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python watchlist_builder.py
