@@ -24,14 +24,16 @@ scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapi
 creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(creds)
 
-# 2. Open the specific Google Sheets
-MASTER_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1Z9TgE-znOIPoh1dlrTG5tBHFOvgYij_0EiGYWMbPGzE/edit?usp=sharing'
-TARGET_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
+# ==========================================
+# 2. READ UNIFIED SHEET
+# ==========================================
+# UNIFIED URL: Connects to the single dashboard sheet
+SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
+spreadsheet = gc.open_by_url(SINGLE_SHEET_URL)
 
 print("Opening Master spreadsheet and reading Industry Groups...")
 try:
-    master_ss = gc.open_by_url(MASTER_SHEET_URL)
-    master_ws = master_ss.worksheet('Avg_Rupee_Volume_Master')
+    master_ws = spreadsheet.worksheet('Avg_Rupee_Volume_Master')
     master_data = master_ws.get_all_records()
     df_master = pd.DataFrame(master_data)
 except Exception as e:
@@ -101,7 +103,7 @@ for ticker in unique_tickers:
         historical_daily = ticker_data.iloc[:-5]
         base_high = historical_daily['High'].dropna().max() if not historical_daily.empty else macro_high
 
-        # === INJECTED SQUEEZE METRIC: prev_2m ===
+        # === SQUEEZE METRIC: prev_2m ===
         prev_2m_val = (closes.iloc[-22] / closes.iloc[-64] - 1) if len(closes) >= 64 else np.nan
 
         stock_base_metrics[ticker] = {
@@ -212,7 +214,7 @@ for industry, stocks in industry_map.items():
         '2nd Best (1M)': sorted_1m.index[1].replace('.NS', '') if len(sorted_1m) > 1 else ''
     })
 
-# 8B. Prepare Stock Database (Ensuring the Prev 2M Squeeze is in exact Column F)
+# 8B. Prepare Stock Database
 individual_stocks_db = []
 for ticker in df_stocks.index:
     stock_row = df_stocks.loc[ticker]
@@ -222,7 +224,7 @@ for ticker in df_stocks.index:
         '1 Day Return': stock_row['1d'],
         '1 Week Return': stock_row['1w'],
         '1 Month Return': stock_row['1m'],
-        'Prev 2M Squeeze': stock_row['prev_2m'], # Mapped perfectly to Col F
+        'Prev 2M Squeeze': stock_row['prev_2m'], 
         '3 Month Return': stock_row['3m'],
         '6 Month Return': stock_row['6m'],
         '% Distance from 21 EMA': stock_row['pct_dist_ema'],
@@ -236,15 +238,14 @@ df_etf = pd.DataFrame(etf_results).fillna('')
 df_all_stocks = pd.DataFrame(individual_stocks_db).fillna('')
 
 # 9. Write back to Target Google Sheet
-print("Writing data back to your Target Google Sheet...")
-target_ss = gc.open_by_url(TARGET_SHEET_URL)
+print("Writing data back to your unified Dashboard Google Sheet...")
 
 etf_tab_name = 'Industry ETF Returns'
 try:
-    etf_sheet = target_ss.worksheet(etf_tab_name)
+    etf_sheet = spreadsheet.worksheet(etf_tab_name)
     etf_sheet.clear()
 except gspread.exceptions.WorksheetNotFound:
-    etf_sheet = target_ss.add_worksheet(title=etf_tab_name, rows="150", cols="20")
+    etf_sheet = spreadsheet.add_worksheet(title=etf_tab_name, rows="150", cols="20")
 
 etf_data_out = [df_etf.columns.values.tolist()] + df_etf.values.tolist()
 etf_sheet.update(values=etf_data_out, range_name='A1', value_input_option='USER_ENTERED')
@@ -253,10 +254,10 @@ etf_sheet.format('B2:I150', {"numberFormat": {"type": "PERCENT", "pattern": "0.0
 
 db_tab_name = 'Stock Database'
 try:
-    db_sheet = target_ss.worksheet(db_tab_name)
+    db_sheet = spreadsheet.worksheet(db_tab_name)
     db_sheet.clear()
 except gspread.exceptions.WorksheetNotFound:
-    db_sheet = target_ss.add_worksheet(title=db_tab_name, rows="2000", cols="15")
+    db_sheet = spreadsheet.add_worksheet(title=db_tab_name, rows="2000", cols="15")
 
 db_data_out = [df_all_stocks.columns.values.tolist()] + df_all_stocks.values.tolist()
 db_sheet.update(values=db_data_out, range_name='A1', value_input_option='USER_ENTERED')
@@ -264,4 +265,4 @@ db_sheet.format('A1:M1', {'textFormat': {'bold': True}})
 db_sheet.format('C2:I2000', {"numberFormat": {"type": "PERCENT", "pattern": "0.00%"}})
 db_sheet.format('K2:K2000', {"numberFormat": {"type": "PERCENT", "pattern": "0.00%"}})
 
-print("Success! ETF Returns and Stock Database fully updated with Squeeze Metrics and Crossovers.")
+print("Success! ETF Returns and Stock Database fully updated.")
