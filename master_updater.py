@@ -10,7 +10,6 @@ import yfinance as yf
 import gspread
 from google.oauth2.service_account import Credentials
 
-# Suppress pandas fragmentation warnings
 warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 pd.options.mode.chained_assignment = None
 
@@ -27,9 +26,9 @@ scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapi
 creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(creds)
 
-# Use the MASTER SHEET URL
-SHEET_URL = 'https://docs.google.com/spreadsheets/d/1Z9TgE-znOIPoh1dlrTG5tBHFOvgYij_0EiGYWMbPGzE/edit?usp=sharing'
-spreadsheet = gc.open_by_url(SHEET_URL)
+# UNIFIED URL: Connects directly to the Dashboard Sheet
+SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
+spreadsheet = gc.open_by_url(SINGLE_SHEET_URL)
 TAB_NAME = "Avg_Rupee_Volume_Master"
 
 # ==========================================
@@ -134,7 +133,6 @@ chunks = list(chunker(symbols_list, chunk_size))
 sector_data = []
 
 print(f"\nFetching Sectors for {len(symbols_list)} stocks in {len(chunks)} batches.")
-print("This will take a few minutes...")
 
 for i, chunk in enumerate(chunks):
     print(f" -> Processing sector batch {i+1} of {len(chunks)}...")
@@ -153,7 +151,7 @@ final_df = final_df[['Symbol', 'Company Name', 'Sector', 'Industry Group', 'Avg_
 # ==========================================
 # 5. WRITE RESULTS TO GOOGLE SHEETS
 # ==========================================
-print("\nExporting sorted metrics directly to your Google Sheet...")
+print("\nExporting sorted metrics directly to your Unified Google Sheet...")
 
 try:
     worksheet = spreadsheet.worksheet(TAB_NAME)
