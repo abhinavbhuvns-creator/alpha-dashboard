@@ -25,16 +25,15 @@ scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapi
 creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(creds)
 
-MASTER_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1Z9TgE-znOIPoh1dlrTG5tBHFOvgYij_0EiGYWMbPGzE/edit?usp=sharing'
-TARGET_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
-
-master_ss = gc.open_by_url(MASTER_SHEET_URL)
-target_ss = gc.open_by_url(TARGET_SHEET_URL)
+# UNIFIED URL: Connects to the single dashboard sheet
+SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
+master_ss = gc.open_by_url(SINGLE_SHEET_URL)
+target_ss = gc.open_by_url(SINGLE_SHEET_URL)
 
 # ==========================================
 # 2. GET INDUSTRY MAPPING FROM MASTER
 # ==========================================
-print("Mapping stocks to industries from Master Sheet...")
+print("Mapping stocks to industries from Unified Sheet...")
 master_ws = master_ss.worksheet("Avg_Rupee_Volume_Master")
 master_data = master_ws.get_all_records()
 df_master = pd.DataFrame(master_data)
@@ -201,7 +200,6 @@ for stock in all_unique_stocks:
 # ==========================================
 # 5. BUILD THE THREE LISTS
 # ==========================================
-# Headers updated to include the Prev 2M Return
 headers = [
     "Stock Symbol", "Industry Group", "ADR %", "20D Avg Rupee Vol",
     "1 Day Return %", "1 Week Return %", "1 Month Return %", "Prev 2M Return (Ending 1M Ago) %"
@@ -258,7 +256,6 @@ def write_to_sheet(tab_name, data):
         ws.update(values=data, range_name='A1', value_input_option='USER_ENTERED')
         ws.freeze(rows=1)
         
-        # Shifted column letter to account for the new Squeeze column (Column H)
         col_letter = chr(ord('H') + len(scanners))
         ws.format(f'A1:{col_letter}1', {
             "backgroundColor": {"red": 0.1, "green": 0.2, "blue": 0.4},
