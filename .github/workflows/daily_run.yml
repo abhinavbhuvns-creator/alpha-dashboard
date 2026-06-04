@@ -31,6 +31,11 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: python main.py
 
+      - name: Run ETF Database Engine (Runs at 9:20 AM and 4:00 PM)
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python etf_database_updater.py
+
       - name: Run Master Scanner (Runs ONLY at 4:00 PM or Manual Play)
         if: github.event.schedule == '30 10 * * 1-5' || github.event_name == 'workflow_dispatch'
         env:
