@@ -24,21 +24,21 @@ scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapi
 creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(creds)
 
-TARGET_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
-target_ss = gc.open_by_url(TARGET_SHEET_URL)
-
-MASTER_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1Z9TgE-znOIPoh1dlrTG5tBHFOvgYij_0EiGYWMbPGzE/edit?usp=sharing'
-master_ss = gc.open_by_url(MASTER_SHEET_URL)
-
 # ==========================================
-# 2. FETCH DATA FROM MASTER SHEET
+# 2. READ UNIFIED SHEET
 # ==========================================
-print("Reading Tickers, Volumes, and Industries from Master Sheet...")
+# UNIFIED URL: Connects to the single dashboard sheet
+SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
+
+master_ss = gc.open_by_url(SINGLE_SHEET_URL)
+target_ss = gc.open_by_url(SINGLE_SHEET_URL)
+
+print("Reading Tickers, Volumes, and Industries from Unified Sheet...")
 try:
     master_ws = master_ss.worksheet("Avg_Rupee_Volume_Master")
     master_data = master_ws.get_all_records()
 except Exception as e:
-    raise SystemExit(f"🛑 Error reading Master Sheet: {e}")
+    raise SystemExit(f"🛑 Error reading Master Data: {e}")
 
 master_df = pd.DataFrame(master_data)
 
@@ -84,7 +84,6 @@ high_df.index = high_df.index.tz_localize(None)
 # ==========================================
 print("Crunching technical criteria, ADR, and Weekly Pocket Pivots...")
 
-# Daily Base Calculations
 low_52w = low_df.rolling(window=252, min_periods=200).min()
 avg_vol_50 = vol_df.rolling(window=50).mean()
 max_vol_252 = vol_df.rolling(window=252, min_periods=200).max()
@@ -109,30 +108,24 @@ for ticker in tickers:
 
     weekly_df['ActualDate'] = weekly_last_dates.values
 
-    # Rule 1: 10 EMA > 30 EMA
     ema_10 = weekly_df['Close'].ewm(span=10, adjust=False).mean()
     ema_30 = weekly_df['Close'].ewm(span=30, adjust=False).mean()
     cond1 = ema_10 > ema_30
 
-    # Rule 2: WCR >= 40%
     wk_range = weekly_df['High'] - weekly_df['Low']
     wcr = ((weekly_df['Close'] - weekly_df['Low']) / wk_range) * 100
     cond2 = wcr >= 40
 
-    # Rule 3: Current Vol > 10-Week Vol SMA
     sma_vol = weekly_df['Volume'].rolling(10).mean()
     cond3 = weekly_df['Volume'] > sma_vol
 
-    # Rule 4: Vol > Highest Down Vol in prior 10 weeks
     is_down_week = weekly_df['Close'].diff() < 0
     down_vols = weekly_df['Volume'].where(is_down_week, 0)
     max_down_vol_10w = down_vols.shift(1).rolling(10).max()
     cond4 = weekly_df['Volume'] > max_down_vol_10w
 
-    # NEW RULE 5: Current week must be an UP week (Close > Previous Close)
     cond5 = weekly_df['Close'] > weekly_df['Close'].shift(1)
 
-    # Combine conditions
     pp_weekly = cond1 & cond2 & cond3 & cond4 & cond5
 
     trigger_dates = weekly_df.loc[pp_weekly, 'ActualDate'].dropna()
@@ -152,7 +145,6 @@ scanner_conditions = {
     "Weekly Pocket Pivot": pp_mask_df
 }
 
-# Filter time window: Last 6 months strictly
 six_months_ago = pd.Timestamp.today().normalize() - pd.DateOffset(months=6)
 time_mask = close_df.index >= six_months_ago
 
@@ -178,7 +170,6 @@ mcap_cache = {}
 
 for ticker in all_shortlisted:
     stock_name = ticker.replace('.NS', '')
-
     avg_vol_crores = volume_map.get(stock_name, 0)
 
     if avg_vol_crores < 1.0:
@@ -195,7 +186,6 @@ for ticker in all_shortlisted:
             for scan_name, mask in scanner_masks.items():
                 if ticker in mask.columns and mask[ticker].any():
                     valid_dates = mask[ticker][mask[ticker]].index
-
                     ratio = absolute_rupee_vol / market_cap
 
                     if ratio >= 0.0025:
@@ -218,7 +208,7 @@ for ticker in all_shortlisted:
 # ==========================================
 # 6. WRITE RESULTS TO TARGET SHEET
 # ==========================================
-print("\nExporting all formatted data to Target Google Sheet...")
+print("\nExporting all formatted data to Unified Google Sheet...")
 
 headers = ["Trigger Date", "Stock Symbol", "Industry Group", "Avg Rupee Vol (Cr)", "ADR %"]
 
@@ -244,4 +234,4 @@ for tab_name, matched_stocks in results.items():
         worksheet.update(values=[["No stocks met criteria."]], range_name='A1', value_input_option='USER_ENTERED')
         print(f" -> '{tab_name}' tab updated (0 matches).")
 
-print("\nMaster Scanner Complete! All 9 tabs (including Weekly Pocket Pivot) are updated in the Target Sheet.")
+print("\nMaster Scanner Complete! All 9 tabs updated in the Dashboard Sheet.")
