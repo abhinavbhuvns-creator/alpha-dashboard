@@ -7,7 +7,6 @@ on:
     # 2. Runs at 10:30 UTC (4:00 PM IST) - Monday through Friday
     - cron: '30 10 * * 1-5'
   
-  # This line adds a manual "Play" button so you can test it immediately
   workflow_dispatch: 
 
 jobs:
@@ -27,7 +26,14 @@ jobs:
         run: |
           pip install yfinance gspread google-auth pandas numpy
 
-      - name: Run Main Dashboard Script
+      - name: Run Daily Technicals (Runs at 9:20 AM and 4:00 PM)
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: python main.py
+
+      - name: Run Master Scanner (Runs ONLY at 4:00 PM or Manual Play)
+        # This tells GitHub to skip this step if the time is 9:20 AM (3:50 UTC)
+        if: github.event.schedule == '30 10 * * 1-5' || github.event_name == 'workflow_dispatch'
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python master_scanner.py
