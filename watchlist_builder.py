@@ -85,8 +85,8 @@ for scan in scanners:
     raw_scanner_data[scan] = data
 
     for row in data[1:]:
-        if len(row) >= 2 and row[1] != "Last Trigger Date in 6 Months":
-            try: all_dates.append(pd.to_datetime(row[1]).normalize())
+        if len(row) >= 2 and row[0] != "Trigger Date":
+            try: all_dates.append(pd.to_datetime(row[0]).normalize()) # COLUMN A is Date
             except: pass
 
 latest_trading_date = max(all_dates) if all_dates else pd.Timestamp.today().normalize()
@@ -102,8 +102,8 @@ for scan, data in raw_scanner_data.items():
     cutoff_date_univ = latest_trading_date - pd.Timedelta(days=lookback_days)
 
     for row in data[1:]:
-        if len(row) == 0: continue
-        stock = row[0].strip().upper()
+        if len(row) < 2: continue
+        stock = row[1].strip().upper() # COLUMN B is Stock Symbol
         if not stock or stock == "STOCK SYMBOL": continue
 
         if lookback_days >= 9000:
@@ -115,8 +115,7 @@ for scan, data in raw_scanner_data.items():
             oneday_tracker[stock][scan] = "Yes"
             continue
 
-        if len(row) < 2: continue
-        try: trigger_date = pd.to_datetime(row[1].strip()).normalize()
+        try: trigger_date = pd.to_datetime(row[0].strip()).normalize() # COLUMN A is Date
         except: continue
 
         if trigger_date >= cutoff_date_univ:
@@ -144,14 +143,17 @@ def chunker(seq, size):
 all_chunks = []
 ticker_chunks = list(chunker(tickers, 400))
 
-for i, chunk in enumerate(ticker_chunks):
-    print(f" -> Downloading price batch {i+1} of {len(ticker_chunks)}...")
-    chunk_data = yf.download(chunk, period="250d", group_by="ticker", threads=True, progress=False)
-    all_chunks.append(chunk_data)
-    if i < len(ticker_chunks) - 1:
-        time.sleep(2)
+if len(tickers) > 0:
+    for i, chunk in enumerate(ticker_chunks):
+        print(f" -> Downloading price batch {i+1} of {len(ticker_chunks)}...")
+        chunk_data = yf.download(chunk, period="250d", group_by="ticker", threads=True, progress=False)
+        all_chunks.append(chunk_data)
+        if i < len(ticker_chunks) - 1:
+            time.sleep(2)
 
-data = pd.concat(all_chunks, axis=1)
+    data = pd.concat(all_chunks, axis=1)
+else:
+    data = pd.DataFrame()
 
 tech_data = {}
 
@@ -179,7 +181,6 @@ for stock in all_unique_stocks:
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100
         ret_1m = df['Close'].pct_change(periods=21).iloc[-1] * 100
 
-        # === RE-ADDED SQUEEZE METRIC ===
         if len(df) >= 64:
             close_1m_ago = df['Close'].iloc[-22]
             close_3m_ago = df['Close'].iloc[-64]
