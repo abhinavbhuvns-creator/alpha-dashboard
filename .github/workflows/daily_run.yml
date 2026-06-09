@@ -2,10 +2,10 @@ name: Alpha Dashboard Daily Run
 
 on:
   schedule:
-    # 1. Runs at 3:50 UTC (9:20 AM IST) - Monday through Friday
-    - cron: '50 3 * * 1-5'
-    # 2. Runs at 10:30 UTC (4:00 PM IST) - Monday through Friday
-    - cron: '30 10 * * 1-5'
+    # 1. Runs at 03:53 UTC (9:23 AM IST) - Monday through Friday
+    - cron: '53 3 * * 1-5'
+    # 2. Runs at 10:41 UTC (4:11 PM IST) - Monday through Friday
+    - cron: '41 10 * * 1-5'
   
   workflow_dispatch: 
 
@@ -25,24 +25,24 @@ jobs:
       - name: Install required libraries
         run: pip install yfinance gspread google-auth pandas numpy
 
-      - name: 1. Run Daily Technicals (9:20 AM and 4:00 PM)
+      - name: 1. Run Daily Technicals (Both Morning and Afternoon)
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: python main.py
 
-      - name: 2. Run ETF Database Engine (9:20 AM and 4:00 PM)
+      - name: 2. Run ETF Database Engine (Both Morning and Afternoon)
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: python etf_database_updater.py
 
-      - name: 3. Run Master Scanner (4:00 PM ONLY)
-        if: github.event.schedule == '30 10 * * 1-5' || github.event_name == 'workflow_dispatch'
+      - name: 3. Run Master Scanner (AFTERNOON ONLY)
+        if: github.event.schedule == '41 10 * * 1-5' || github.event_name == 'workflow_dispatch'
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: python master_scanner.py
 
-      - name: 4. Run Watchlist Builder (4:00 PM ONLY)
-        if: github.event.schedule == '30 10 * * 1-5' || github.event_name == 'workflow_dispatch'
+      - name: 4. Run Watchlist Builder (AFTERNOON ONLY)
+        if: github.event.schedule == '41 10 * * 1-5' || github.event_name == 'workflow_dispatch'
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: python watchlist_builder.py
