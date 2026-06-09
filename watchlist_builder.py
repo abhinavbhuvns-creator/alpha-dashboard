@@ -1,11 +1,10 @@
 import os
 import json
-import time
 import warnings
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import gspread
+from yahooquery import Ticker
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
 
@@ -25,7 +24,6 @@ scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapi
 creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(creds)
 
-# UNIFIED URL: Connects to the single dashboard sheet
 SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
 master_ss = gc.open_by_url(SINGLE_SHEET_URL)
 target_ss = gc.open_by_url(SINGLE_SHEET_URL)
@@ -37,7 +35,6 @@ print("Mapping stocks to industries from Unified Sheet...")
 master_ws = master_ss.worksheet("Avg_Rupee_Volume_Master")
 master_data = master_ws.get_all_records()
 df_master = pd.DataFrame(master_data)
-
 stock_to_industry = df_master.set_index('Symbol')['Industry Group'].to_dict()
 
 # ==========================================
@@ -62,7 +59,6 @@ for row in settings_data[1:]:
         scanners.append(scan_name)
         rules_universe[scan_name] = days
 
-print("Reading tab names (Ignoring spaces and capital letters)...")
 all_tabs = target_ss.worksheets()
 tab_mapping = {}
 for sheet in all_tabs:
@@ -72,13 +68,12 @@ for sheet in all_tabs:
 all_dates = []
 raw_scanner_data = {}
 
-print("Extracting scanner data...")
 for scan in scanners:
     target_name = scan.replace(" ", "").upper()
     if target_name == "SIXMONTHSTRENGTH" and "6MONTHSTRENGTH" in tab_mapping:
         target_name = "6MONTHSTRENGTH"
     if target_name not in tab_mapping:
-        raise SystemExit(f"\n🛑 CRITICAL ERROR: Found '{scan}' in Settings, but could not find a matching tab.")
+        continue
 
     ws = tab_mapping[target_name]
     data = ws.get_all_values()
@@ -132,80 +127,60 @@ all_unique_stocks = list(set(universe_tracker.keys()) | set(oneday_tracker.keys(
 print(f"Found {len(all_unique_stocks)} unique stocks matching timeframe rules.")
 
 # ==========================================
-# 4. DOWNLOAD TECHNICAL DATA (RATE-LIMIT SAFE)
+# 4. DOWNLOAD TECHNICAL DATA (YAHOOQUERY BACKEND)
 # ==========================================
-print("Downloading recent technical data for shortlisted stocks...")
+print("Fetching data instantly via Yahoo Backend API...")
 tickers = [s + '.NS' for s in all_unique_stocks]
 
-def chunker(seq, size):
-    return (seq[pos:pos + size] for pos in range(0, len(seq), size))
-
-all_chunks = []
-# Reduced from 400 to 50 to avoid angering Yahoo Finance
-ticker_chunks = list(chunker(tickers, 25))
-
-if len(tickers) > 0:
-    for i, chunk in enumerate(ticker_chunks):
-        print(f" -> Downloading price batch {i+1} of {len(ticker_chunks)}...")
-        try:
-            # threads=False prevents parallel request bursts
-            chunk_data = yf.download(chunk, period="250d", group_by="ticker", threads=False, progress=False)
-            all_chunks.append(chunk_data)
-        except Exception as e:
-            print(f"    Skipping batch due to error: {e}")
-        
-        # Increased sleep to let Yahoo Finance breathe
-        time.sleep(5)
-
-    if all_chunks:
-        data = pd.concat(all_chunks, axis=1)
-    else:
-        data = pd.DataFrame()
-else:
-    data = pd.DataFrame()
+# Pulls all data asynchronously in one massively parallel shot
+t = Ticker(tickers, asynchronous=True)
+data = t.history(period="1y")
 
 tech_data = {}
-
 print("Calculating EMAs, Returns, Squeeze Metric, and ADR...")
-for stock in all_unique_stocks:
-    ticker = stock + '.NS'
-    try:
-        if len(tickers) == 1: df = data.copy()
-        else:
-            if ticker not in data.columns.levels[0]: continue
-            df = data[ticker].copy()
 
-        df = df.dropna(subset=['Close'])
-        if df.empty or len(df) < 150: continue
+if isinstance(data, pd.DataFrame) and not data.empty:
+    for stock in all_unique_stocks:
+        ticker = stock + '.NS'
+        try:
+            if ticker not in data.index.levels[0]: 
+                continue
+                
+            df = data.loc[ticker]
+            df = df.dropna(subset=['close'])
+            if df.empty or len(df) < 150: continue
 
-        close = df['Close'].iloc[-1]
-        ema_21 = df['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
-        ema_50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
-        ema_150 = df['Close'].ewm(span=150, adjust=False).mean().iloc[-1]
+            close = df['close'].iloc[-1]
+            ema_21 = df['close'].ewm(span=21, adjust=False).mean().iloc[-1]
+            ema_50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+            ema_150 = df['close'].ewm(span=150, adjust=False).mean().iloc[-1]
 
-        rupee_vol = df['Close'] * df['Volume']
-        avg_rupee_vol_20 = rupee_vol.rolling(window=20).mean().iloc[-1]
+            rupee_vol = df['close'] * df['volume']
+            avg_rupee_vol_20 = rupee_vol.rolling(window=20).mean().iloc[-1]
 
-        ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
-        ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100
-        ret_1m = df['Close'].pct_change(periods=21).iloc[-1] * 100
+            ret_1d = df['close'].pct_change(periods=1).iloc[-1] * 100
+            ret_1w = df['close'].pct_change(periods=5).iloc[-1] * 100
+            ret_1m = df['close'].pct_change(periods=21).iloc[-1] * 100
 
-        if len(df) >= 64:
-            close_1m_ago = df['Close'].iloc[-22]
-            close_3m_ago = df['Close'].iloc[-64]
-            ret_prev_2m = ((close_1m_ago / close_3m_ago) - 1) * 100
-        else:
-            ret_prev_2m = np.nan
+            if len(df) >= 64:
+                close_1m_ago = df['close'].iloc[-22]
+                close_3m_ago = df['close'].iloc[-64]
+                ret_prev_2m = ((close_1m_ago / close_3m_ago) - 1) * 100
+            else:
+                ret_prev_2m = np.nan
 
-        daily_range = (df['High'] / df['Low']) - 1
-        adr_20 = daily_range.rolling(window=20).mean().iloc[-1] * 100
+            daily_range = (df['high'] / df['low']) - 1
+            adr_20 = daily_range.rolling(window=20).mean().iloc[-1] * 100
 
-        tech_data[stock] = {
-            "close": close, "ema_21": ema_21, "ema_50": ema_50, "ema_150": ema_150,
-            "vol": avg_rupee_vol_20, "ret_1d": ret_1d, "ret_1w": ret_1w, "ret_1m": ret_1m,
-            "ret_prev_2m": ret_prev_2m, "adr": adr_20
-        }
-    except Exception as e: continue
+            tech_data[stock] = {
+                "close": close, "ema_21": ema_21, "ema_50": ema_50, "ema_150": ema_150,
+                "vol": avg_rupee_vol_20, "ret_1d": ret_1d, "ret_1w": ret_1w, "ret_1m": ret_1m,
+                "ret_prev_2m": ret_prev_2m, "adr": adr_20
+            }
+        except Exception as e: 
+            continue
+else:
+    print("Warning: Failed to retrieve bulk data.")
 
 # ==========================================
 # 5. BUILD THE THREE LISTS
