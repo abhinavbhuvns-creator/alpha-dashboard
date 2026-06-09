@@ -155,7 +155,7 @@ if len(tickers) > 0:
             print(f"    Skipping batch due to error: {e}")
         
         # Increased sleep to let Yahoo Finance breathe
-        time.sleep(3)
+        time.sleep(5)
 
     if all_chunks:
         data = pd.concat(all_chunks, axis=1)
