@@ -1,11 +1,10 @@
 import os
 import json
-import time
 import warnings
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import gspread
+from yahooquery import Ticker
 from google.oauth2.service_account import Credentials
 
 warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
@@ -27,7 +26,6 @@ gc = gspread.authorize(creds)
 # ==========================================
 # 2. READ UNIFIED SHEET
 # ==========================================
-# UNIFIED URL: Connects to the single dashboard sheet
 SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
 
 master_ss = gc.open_by_url(SINGLE_SHEET_URL)
@@ -46,38 +44,33 @@ if 'Symbol' not in master_df.columns:
     raise SystemExit("🛑 Error: Could not find 'Symbol' column in the Master Sheet.")
 
 tickers = (master_df['Symbol'].str.strip() + '.NS').tolist()
-
 industry_map = master_df.set_index('Symbol')['Industry Group'].to_dict()
 volume_map = master_df.set_index('Symbol')['Avg_Rupee_Volume_Crores'].to_dict()
 
 # ==========================================
-# 3. VECTORIZED DATA DOWNLOAD (SAFE BATCHED)
+# 3. VECTORIZED DATA DOWNLOAD (YAHOOQUERY API)
 # ==========================================
-def chunker(seq, size):
-    return (seq[pos:pos + size] for pos in range(0, len(seq), size))
+print(f"Downloading 2 years of history for {len(tickers)} stocks instantly via Yahoo Backend...")
 
-print(f"Downloading 2 years of history for {len(tickers)} stocks in safe batches...")
-all_chunks = []
-ticker_chunks = list(chunker(tickers, 400))
+t = Ticker(tickers, asynchronous=True)
+data = t.history(period="2y")
 
-for i, chunk in enumerate(ticker_chunks):
-    print(f" -> Downloading price batch {i+1} of {len(ticker_chunks)}...")
-    chunk_data = yf.download(chunk, period="2y", group_by="ticker", threads=True, progress=False)
-    all_chunks.append(chunk_data)
-    if i < len(ticker_chunks) - 1:
-        time.sleep(2)
+if not isinstance(data, pd.DataFrame) or data.empty:
+    raise SystemExit("🛑 Error: Failed to retrieve bulk history data.")
 
-data = pd.concat(all_chunks, axis=1)
+# Transform the multi-index data into the TxN format the math engine expects
+data = data.reset_index()
 
-close_df = pd.DataFrame({t: data[t]['Close'] for t in tickers if t in data.columns.levels[0]})
-vol_df = pd.DataFrame({t: data[t]['Volume'] for t in tickers if t in data.columns.levels[0]})
-low_df = pd.DataFrame({t: data[t]['Low'] for t in tickers if t in data.columns.levels[0]})
-high_df = pd.DataFrame({t: data[t]['High'] for t in tickers if t in data.columns.levels[0]})
+close_df = data.pivot(index='date', columns='symbol', values='close')
+vol_df = data.pivot(index='date', columns='symbol', values='volume')
+low_df = data.pivot(index='date', columns='symbol', values='low')
+high_df = data.pivot(index='date', columns='symbol', values='high')
 
-close_df.index = close_df.index.tz_localize(None)
-vol_df.index = vol_df.index.tz_localize(None)
-low_df.index = low_df.index.tz_localize(None)
-high_df.index = high_df.index.tz_localize(None)
+# Strip timezone formatting from dates to avoid comparison errors
+close_df.index = pd.to_datetime(close_df.index).tz_localize(None)
+vol_df.index = pd.to_datetime(vol_df.index).tz_localize(None)
+low_df.index = pd.to_datetime(low_df.index).tz_localize(None)
+high_df.index = pd.to_datetime(high_df.index).tz_localize(None)
 
 # ==========================================
 # 4. CRUNCH TECHNICALS & POCKET PIVOT
@@ -95,11 +88,17 @@ base_rules = close_df > 40
 # --- WEEKLY POCKET PIVOT VECTORIZATION ---
 pp_mask_df = pd.DataFrame(False, index=close_df.index, columns=close_df.columns)
 
-for ticker in tickers:
-    if ticker not in data.columns.levels[0]: continue
-    df_tick = data[ticker].dropna(subset=['Close'])
+for ticker in close_df.columns:
+    df_tick = pd.DataFrame({
+        'Close': close_df[ticker],
+        'High': high_df[ticker],
+        'Low': low_df[ticker],
+        'Volume': vol_df[ticker]
+    }).dropna(subset=['Close'])
+    
     if len(df_tick) < 60: continue
-
+    
+    df_tick.index.name = 'Date'
     weekly_last_dates = df_tick.reset_index().groupby(pd.Grouper(key='Date', freq='W-FRI'))['Date'].last().dropna()
 
     weekly_df = df_tick.resample('W-FRI').agg({
@@ -113,6 +112,8 @@ for ticker in tickers:
     cond1 = ema_10 > ema_30
 
     wk_range = weekly_df['High'] - weekly_df['Low']
+    # Prevent division by zero
+    wk_range = wk_range.replace(0, np.nan) 
     wcr = ((weekly_df['Close'] - weekly_df['Low']) / wk_range) * 100
     cond2 = wcr >= 40
 
@@ -160,13 +161,28 @@ for name, condition in scanner_conditions.items():
 print(f"Total unique stocks passing Base Rules + ANY specific scan: {len(all_shortlisted)}")
 
 # ==========================================
-# 5. MARKET CAP CHECK & DATA FORMATTING
+# 5. ASYNC MARKET CAP CHECK & DATA FORMATTING
 # ==========================================
-print("Verifying Volume limits, Market Cap, and compiling final metrics...")
+print("Verifying Volume limits, bulk fetching Market Caps, and compiling results...")
 results = {name: [] for name in scanner_conditions.keys()}
 adr_6m = adr_20_df.loc[time_mask]
 
 mcap_cache = {}
+
+# Bulk fetch Market Caps to completely bypass the 10-minute bottleneck
+if all_shortlisted:
+    print(f"Fetching Market Caps for {len(all_shortlisted)} shortlisted stocks...")
+    shortlisted_list = list(all_shortlisted)
+    t_mcap = Ticker(shortlisted_list, asynchronous=True)
+    try:
+        summary_data = t_mcap.summary_detail
+        for tkr, details in summary_data.items():
+            if isinstance(details, dict):
+                mcap_cache[tkr] = details.get('marketCap', 0)
+            else:
+                mcap_cache[tkr] = 0
+    except Exception as e:
+        print(f"Warning: Issue fetching market caps: {e}")
 
 for ticker in all_shortlisted:
     stock_name = ticker.replace('.NS', '')
@@ -176,40 +192,33 @@ for ticker in all_shortlisted:
         continue
 
     absolute_rupee_vol = avg_vol_crores * 10000000
+    market_cap = mcap_cache.get(ticker, 0)
 
-    try:
-        if ticker not in mcap_cache:
-            mcap_cache[ticker] = yf.Ticker(ticker).info.get('marketCap', 0)
-        market_cap = mcap_cache[ticker]
+    if market_cap > 0:
+        for scan_name, mask in scanner_masks.items():
+            if ticker in mask.columns and mask[ticker].any():
+                valid_dates = mask[ticker][mask[ticker]].index
+                ratio = absolute_rupee_vol / market_cap
 
-        if market_cap > 0:
-            for scan_name, mask in scanner_masks.items():
-                if ticker in mask.columns and mask[ticker].any():
-                    valid_dates = mask[ticker][mask[ticker]].index
-                    ratio = absolute_rupee_vol / market_cap
+                if ratio >= 0.0025:
+                    latest_date_obj = valid_dates.max()
+                    latest_date_str = latest_date_obj.strftime('%Y-%m-%d')
 
-                    if ratio >= 0.0025:
-                        latest_date_obj = valid_dates.max()
-                        latest_date_str = latest_date_obj.strftime('%Y-%m-%d')
+                    trigger_adr = adr_6m.loc[latest_date_obj, ticker]
+                    industry = industry_map.get(stock_name, "Unclassified")
 
-                        trigger_adr = adr_6m.loc[latest_date_obj, ticker]
-                        industry = industry_map.get(stock_name, "Unclassified")
-
-                        results[scan_name].append([
-                            latest_date_str,
-                            stock_name,
-                            industry,
-                            avg_vol_crores,
-                            round(trigger_adr, 2) if pd.notna(trigger_adr) else "N/A"
-                        ])
-    except Exception as e:
-        continue
+                    results[scan_name].append([
+                        latest_date_str,
+                        stock_name,
+                        industry,
+                        avg_vol_crores,
+                        round(trigger_adr, 2) if pd.notna(trigger_adr) else "N/A"
+                    ])
 
 # ==========================================
 # 6. WRITE RESULTS TO TARGET SHEET
 # ==========================================
 print("\nExporting all formatted data to Unified Google Sheet...")
-
 headers = ["Trigger Date", "Stock Symbol", "Industry Group", "Avg Rupee Vol (Cr)", "ADR %"]
 
 for tab_name, matched_stocks in results.items():
