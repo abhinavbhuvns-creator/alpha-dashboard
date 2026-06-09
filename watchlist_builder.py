@@ -86,7 +86,7 @@ for scan in scanners:
 
     for row in data[1:]:
         if len(row) >= 2 and row[0] != "Trigger Date":
-            try: all_dates.append(pd.to_datetime(row[0]).normalize()) # COLUMN A is Date
+            try: all_dates.append(pd.to_datetime(row[0]).normalize()) 
             except: pass
 
 latest_trading_date = max(all_dates) if all_dates else pd.Timestamp.today().normalize()
@@ -103,7 +103,7 @@ for scan, data in raw_scanner_data.items():
 
     for row in data[1:]:
         if len(row) < 2: continue
-        stock = row[1].strip().upper() # COLUMN B is Stock Symbol
+        stock = row[1].strip().upper() 
         if not stock or stock == "STOCK SYMBOL": continue
 
         if lookback_days >= 9000:
@@ -115,7 +115,7 @@ for scan, data in raw_scanner_data.items():
             oneday_tracker[stock][scan] = "Yes"
             continue
 
-        try: trigger_date = pd.to_datetime(row[0].strip()).normalize() # COLUMN A is Date
+        try: trigger_date = pd.to_datetime(row[0].strip()).normalize() 
         except: continue
 
         if trigger_date >= cutoff_date_univ:
@@ -132,7 +132,7 @@ all_unique_stocks = list(set(universe_tracker.keys()) | set(oneday_tracker.keys(
 print(f"Found {len(all_unique_stocks)} unique stocks matching timeframe rules.")
 
 # ==========================================
-# 4. DOWNLOAD TECHNICAL DATA & CALCULATE
+# 4. DOWNLOAD TECHNICAL DATA (RATE-LIMIT SAFE)
 # ==========================================
 print("Downloading recent technical data for shortlisted stocks...")
 tickers = [s + '.NS' for s in all_unique_stocks]
@@ -141,17 +141,26 @@ def chunker(seq, size):
     return (seq[pos:pos + size] for pos in range(0, len(seq), size))
 
 all_chunks = []
-ticker_chunks = list(chunker(tickers, 400))
+# Reduced from 400 to 50 to avoid angering Yahoo Finance
+ticker_chunks = list(chunker(tickers, 50))
 
 if len(tickers) > 0:
     for i, chunk in enumerate(ticker_chunks):
         print(f" -> Downloading price batch {i+1} of {len(ticker_chunks)}...")
-        chunk_data = yf.download(chunk, period="250d", group_by="ticker", threads=True, progress=False)
-        all_chunks.append(chunk_data)
-        if i < len(ticker_chunks) - 1:
-            time.sleep(2)
+        try:
+            # threads=False prevents parallel request bursts
+            chunk_data = yf.download(chunk, period="250d", group_by="ticker", threads=False, progress=False)
+            all_chunks.append(chunk_data)
+        except Exception as e:
+            print(f"    Skipping batch due to error: {e}")
+        
+        # Increased sleep to let Yahoo Finance breathe
+        time.sleep(3)
 
-    data = pd.concat(all_chunks, axis=1)
+    if all_chunks:
+        data = pd.concat(all_chunks, axis=1)
+    else:
+        data = pd.DataFrame()
 else:
     data = pd.DataFrame()
 
