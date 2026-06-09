@@ -142,7 +142,7 @@ def chunker(seq, size):
 
 all_chunks = []
 # Reduced from 400 to 50 to avoid angering Yahoo Finance
-ticker_chunks = list(chunker(tickers, 50))
+ticker_chunks = list(chunker(tickers, 25))
 
 if len(tickers) > 0:
     for i, chunk in enumerate(ticker_chunks):
