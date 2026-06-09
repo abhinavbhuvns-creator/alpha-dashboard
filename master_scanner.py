@@ -61,16 +61,13 @@ if not isinstance(data, pd.DataFrame) or data.empty:
 # Transform the multi-index data into the TxN format the math engine expects
 data = data.reset_index()
 
+# 🟢 THE FIX: Force all dates to uniform UTC, then strip the timezone completely
+data['date'] = pd.to_datetime(data['date'], utc=True).dt.tz_localize(None)
+
 close_df = data.pivot(index='date', columns='symbol', values='close')
 vol_df = data.pivot(index='date', columns='symbol', values='volume')
 low_df = data.pivot(index='date', columns='symbol', values='low')
 high_df = data.pivot(index='date', columns='symbol', values='high')
-
-# Strip timezone formatting from dates to avoid comparison errors
-close_df.index = pd.to_datetime(close_df.index).tz_localize(None)
-vol_df.index = pd.to_datetime(vol_df.index).tz_localize(None)
-low_df.index = pd.to_datetime(low_df.index).tz_localize(None)
-high_df.index = pd.to_datetime(high_df.index).tz_localize(None)
 
 # ==========================================
 # 4. CRUNCH TECHNICALS & POCKET PIVOT
@@ -169,7 +166,6 @@ adr_6m = adr_20_df.loc[time_mask]
 
 mcap_cache = {}
 
-# Bulk fetch Market Caps to completely bypass the 10-minute bottleneck
 if all_shortlisted:
     print(f"Fetching Market Caps for {len(all_shortlisted)} shortlisted stocks...")
     shortlisted_list = list(all_shortlisted)
