@@ -128,7 +128,7 @@ all_unique_stocks = list(set(universe_tracker.keys()) | set(oneday_tracker.keys(
 print(f"Found {len(all_unique_stocks)} unique stocks matching timeframe rules.")
 
 # ==========================================
-# 4. DOWNLOAD TECHNICAL DATA (yfinance RETRY ENGINE)
+# 4. DOWNLOAD TECHNICAL DATA
 # ==========================================
 print("Downloading recent technical data for shortlisted stocks...")
 tickers = [s + '.NS' for s in all_unique_stocks]
@@ -147,7 +147,7 @@ if len(tickers) > 0:
         print(f" -> Downloading price batch {i+1} of {len(ticker_chunks)}...")
         success = False
         
-        for attempt in range(3):
+        for attempt in range(5):
             try:
                 chunk_data = yf.download(chunk, period="250d", group_by="ticker", threads=False, progress=False, session=session)
                 
@@ -159,14 +159,15 @@ if len(tickers) > 0:
                 break 
                 
             except Exception as e:
-                wait_time = 10 * (attempt + 1)
-                print(f"    [!] Yahoo blocked this batch. Retrying in {wait_time} seconds... (Attempt {attempt+1}/3)")
+                wait_time = 30 * (attempt + 1)
+                print(f"    [!] Yahoo IP Blocked. Pausing script for {wait_time} seconds... (Attempt {attempt+1}/5)")
                 time.sleep(wait_time)
         
         if not success:
-            print(f"    [!] Batch {i+1} failed after 3 attempts. Skipping to keep the pipeline moving.")
+            raise SystemExit(f"🛑 CRITICAL ERROR: Yahoo permanently blocked batch {i+1}. Run the dashboard again later.")
             
-        time.sleep(4) 
+        # Perfect 5-second breather between successful chunks
+        time.sleep(5) 
 
     if all_chunks:
         data = pd.concat(all_chunks, axis=1)
