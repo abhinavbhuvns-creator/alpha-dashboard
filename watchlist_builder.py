@@ -82,7 +82,6 @@ for scan in scanners:
 
     for row in data[1:]:
         if len(row) >= 2 and row[0] != "Trigger Date":
-            # THE FIX: Force Python to read DD-MM-YYYY
             try: all_dates.append(pd.to_datetime(row[0].strip(), dayfirst=True).normalize()) 
             except: pass
 
@@ -112,7 +111,6 @@ for scan, data in raw_scanner_data.items():
             oneday_tracker[stock][scan] = "Yes"
             continue
 
-        # THE FIX: Force Python to read DD-MM-YYYY
         try: trigger_date = pd.to_datetime(row[0].strip(), dayfirst=True).normalize() 
         except: continue
 
@@ -179,7 +177,7 @@ else:
 
 tech_data = {}
 
-print("Calculating EMAs, Returns, Squeeze Metric, and ADR...")
+print("Calculating EMAs, Returns, Squeeze Metric, ATR Distances, and ADR...")
 for stock in all_unique_stocks:
     ticker = stock + '.NS'
     try:
@@ -191,10 +189,34 @@ for stock in all_unique_stocks:
         df = df.dropna(subset=['Close'])
         if df.empty or len(df) < 150: continue
 
+        # Calculate 14-Day ATR manually
+        df['tr1'] = df['High'] - df['Low']
+        df['tr2'] = abs(df['High'] - df['Close'].shift(1))
+        df['tr3'] = abs(df['Low'] - df['Close'].shift(1))
+        df['TR'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+        atr_14 = df['TR'].rolling(14).mean().iloc[-1]
+
         close = df['Close'].iloc[-1]
+        ema_9 = df['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
         ema_21 = df['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
         ema_50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
         ema_150 = df['Close'].ewm(span=150, adjust=False).mean().iloc[-1]
+
+        # Calculate Weekly SMAs
+        weekly_df = df['Close'].resample('W-FRI').last().dropna()
+        if len(weekly_df) >= 10:
+            wk_sma_4 = weekly_df.rolling(4).mean().iloc[-1]
+            wk_sma_10 = weekly_df.rolling(10).mean().iloc[-1]
+        else:
+            wk_sma_4 = np.nan
+            wk_sma_10 = np.nan
+
+        # Calculate ATR Multiples (Distances)
+        dist_9 = (close - ema_9) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+        dist_21 = (close - ema_21) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+        dist_50 = (close - ema_50) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+        dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+        dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
 
         rupee_vol = df['Close'] * df['Volume']
         avg_rupee_vol_20 = rupee_vol.rolling(window=20).mean().iloc[-1]
@@ -216,7 +238,9 @@ for stock in all_unique_stocks:
         tech_data[stock] = {
             "close": close, "ema_21": ema_21, "ema_50": ema_50, "ema_150": ema_150,
             "vol": avg_rupee_vol_20, "ret_1d": ret_1d, "ret_1w": ret_1w, "ret_1m": ret_1m,
-            "ret_prev_2m": ret_prev_2m, "adr": adr_20
+            "ret_prev_2m": ret_prev_2m, "adr": adr_20,
+            "dist_9": dist_9, "dist_21": dist_21, "dist_50": dist_50,
+            "dist_w4": dist_w4, "dist_w10": dist_w10
         }
     except Exception as e: continue
 
@@ -225,7 +249,8 @@ for stock in all_unique_stocks:
 # ==========================================
 headers = [
     "Stock Symbol", "Industry Group", "ADR %", "20D Avg Rupee Vol",
-    "1 Day Return %", "1 Week Return %", "1 Month Return %", "Prev 2M Return (Ending 1M Ago) %"
+    "1 Day Return %", "1 Week Return %", "1 Month Return %", "Prev 2M Return (Ending 1M Ago) %",
+    "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)"
 ] + scanners
 
 def format_row(stock, scan_dict):
@@ -236,7 +261,12 @@ def format_row(stock, scan_dict):
     row = [
         stock, ind, round(td['adr'], 2), round(td['vol'], 0),
         round(td['ret_1d'], 2), round(td['ret_1w'], 2), round(td['ret_1m'], 2),
-        round(td['ret_prev_2m'], 2) if pd.notna(td['ret_prev_2m']) else ""
+        round(td['ret_prev_2m'], 2) if pd.notna(td['ret_prev_2m']) else "",
+        round(td['dist_9'], 2) if pd.notna(td['dist_9']) else "",
+        round(td['dist_21'], 2) if pd.notna(td['dist_21']) else "",
+        round(td['dist_50'], 2) if pd.notna(td['dist_50']) else "",
+        round(td['dist_w4'], 2) if pd.notna(td['dist_w4']) else "",
+        round(td['dist_w10'], 2) if pd.notna(td['dist_w10']) else ""
     ]
     for scan in scanners:
         row.append(scan_dict.get(scan, "No"))
@@ -273,13 +303,15 @@ def write_to_sheet(tab_name, data):
         ws = target_ss.worksheet(tab_name)
         ws.clear()
     except gspread.exceptions.WorksheetNotFound:
-        ws = target_ss.add_worksheet(title=tab_name, rows="1000", cols="20")
+        ws = target_ss.add_worksheet(title=tab_name, rows="1000", cols="30")
 
     if len(data) > 1:
+        # Dynamically calculate the letter of the final column so formatting doesn't break
+        col_letter = chr(ord('A') + len(headers) - 1)
+        
         ws.update(values=data, range_name='A1', value_input_option='USER_ENTERED')
         ws.freeze(rows=1)
         
-        col_letter = chr(ord('H') + len(scanners))
         ws.format(f'A1:{col_letter}1', {
             "backgroundColor": {"red": 0.1, "green": 0.2, "blue": 0.4},
             "horizontalAlignment": "CENTER",
