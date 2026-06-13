@@ -82,7 +82,8 @@ for scan in scanners:
 
     for row in data[1:]:
         if len(row) >= 2 and row[0] != "Trigger Date":
-            try: all_dates.append(pd.to_datetime(row[0]).normalize()) 
+            # THE FIX: Force Python to read DD-MM-YYYY
+            try: all_dates.append(pd.to_datetime(row[0].strip(), dayfirst=True).normalize()) 
             except: pass
 
 latest_trading_date = max(all_dates) if all_dates else pd.Timestamp.today().normalize()
@@ -111,7 +112,8 @@ for scan, data in raw_scanner_data.items():
             oneday_tracker[stock][scan] = "Yes"
             continue
 
-        try: trigger_date = pd.to_datetime(row[0].strip()).normalize() 
+        # THE FIX: Force Python to read DD-MM-YYYY
+        try: trigger_date = pd.to_datetime(row[0].strip(), dayfirst=True).normalize() 
         except: continue
 
         if trigger_date >= cutoff_date_univ:
@@ -166,7 +168,6 @@ if len(tickers) > 0:
         if not success:
             raise SystemExit(f"🛑 CRITICAL ERROR: Yahoo permanently blocked batch {i+1}. Run the dashboard again later.")
             
-        # Perfect 5-second breather between successful chunks
         time.sleep(5) 
 
     if all_chunks:
