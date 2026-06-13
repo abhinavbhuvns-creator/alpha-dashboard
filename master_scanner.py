@@ -27,7 +27,6 @@ gc = gspread.authorize(creds)
 # ==========================================
 # 2. READ UNIFIED SHEET
 # ==========================================
-# UNIFIED URL: Connects to the single dashboard sheet
 SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
 
 master_ss = gc.open_by_url(SINGLE_SHEET_URL)
@@ -80,9 +79,9 @@ low_df.index = low_df.index.tz_localize(None)
 high_df.index = high_df.index.tz_localize(None)
 
 # ==========================================
-# 4. CRUNCH TECHNICALS & POCKET PIVOT
+# 4. CRUNCH TECHNICALS, POCKET PIVOT & ATR DISTANCES
 # ==========================================
-print("Crunching technical criteria, ADR, and Weekly Pocket Pivots...")
+print("Crunching technical criteria, ATR Distances, and Weekly Pocket Pivots...")
 
 low_52w = low_df.rolling(window=252, min_periods=200).min()
 avg_vol_50 = vol_df.rolling(window=50).mean()
@@ -91,6 +90,27 @@ prev_max_close_252 = close_df.shift(1).rolling(window=252, min_periods=1).max()
 adr_20_df = ((high_df / low_df) - 1).rolling(window=20).mean() * 100
 
 base_rules = close_df > 40
+
+# --- FAST VECTORIZED ATR & EMA/SMA DISTANCES ---
+ema_9_df = close_df.ewm(span=9, adjust=False).mean()
+ema_21_df = close_df.ewm(span=21, adjust=False).mean()
+ema_50_df = close_df.ewm(span=50, adjust=False).mean()
+
+tr1 = high_df - low_df
+tr2 = (high_df - close_df.shift(1)).abs()
+tr3 = (low_df - close_df.shift(1)).abs()
+tr_df = pd.DataFrame(np.maximum(tr1.values, np.maximum(tr2.values, tr3.values)), index=close_df.index, columns=close_df.columns)
+atr_14_df = tr_df.rolling(window=14).mean().replace(0, np.nan) # Prevent division by zero
+
+weekly_close_df = close_df.resample('W-FRI').last()
+daily_sma_4_df = weekly_close_df.rolling(4).mean().reindex(close_df.index, method='ffill')
+daily_sma_10_df = weekly_close_df.rolling(10).mean().reindex(close_df.index, method='ffill')
+
+dist_9_df = (close_df - ema_9_df) / atr_14_df
+dist_21_df = (close_df - ema_21_df) / atr_14_df
+dist_50_df = (close_df - ema_50_df) / atr_14_df
+dist_w4_df = (close_df - daily_sma_4_df) / atr_14_df
+dist_w10_df = (close_df - daily_sma_10_df) / atr_14_df
 
 # --- WEEKLY POCKET PIVOT VECTORIZATION ---
 pp_mask_df = pd.DataFrame(False, index=close_df.index, columns=close_df.columns)
@@ -135,11 +155,11 @@ for ticker in tickers:
 # --- ASSIGN ALL SCANNERS ---
 scanner_conditions = {
     "70% up from low": close_df >= (1.7 * low_52w),
-    "1 week strength": (close_df.pct_change(periods=5) * 100) > 15,
-    "1 month strength": (close_df.pct_change(periods=21) * 100) > 25,
-    "3 month strength": (close_df.pct_change(periods=63) * 100) > 35,
-    "six month strength": (close_df.pct_change(periods=126) * 100) > 50,
-    "up on volume": ((close_df.pct_change(periods=1) * 100) >= 4.5) & ((vol_df / avg_vol_50) > 2),
+    "1 week strength": (close_df.pct_change(periods=5, fill_method=None) * 100) > 15,
+    "1 month strength": (close_df.pct_change(periods=21, fill_method=None) * 100) > 25,
+    "3 month strength": (close_df.pct_change(periods=63, fill_method=None) * 100) > 35,
+    "six month strength": (close_df.pct_change(periods=126, fill_method=None) * 100) > 50,
+    "up on volume": ((close_df.pct_change(periods=1, fill_method=None) * 100) >= 4.5) & ((vol_df / avg_vol_50) > 2),
     "hvy": (vol_df == max_vol_252) & (vol_df > 0),
     "52 week high": close_df > prev_max_close_252,
     "Weekly Pocket Pivot": pp_mask_df
@@ -193,14 +213,24 @@ for ticker in all_shortlisted:
                         latest_date_str = latest_date_obj.strftime('%Y-%m-%d')
 
                         trigger_adr = adr_6m.loc[latest_date_obj, ticker]
+                        
+                        # Fetch the 5 ATR Distances for this exact date and ticker
+                        d9 = dist_9_df.loc[latest_date_obj, ticker]
+                        d21 = dist_21_df.loc[latest_date_obj, ticker]
+                        d50 = dist_50_df.loc[latest_date_obj, ticker]
+                        dw4 = dist_w4_df.loc[latest_date_obj, ticker]
+                        dw10 = dist_w10_df.loc[latest_date_obj, ticker]
+
                         industry = industry_map.get(stock_name, "Unclassified")
 
                         results[scan_name].append([
-                            latest_date_str,
-                            stock_name,
-                            industry,
-                            avg_vol_crores,
-                            round(trigger_adr, 2) if pd.notna(trigger_adr) else "N/A"
+                            latest_date_str, stock_name, industry, avg_vol_crores,
+                            round(trigger_adr, 2) if pd.notna(trigger_adr) else "N/A",
+                            round(d9, 2) if pd.notna(d9) else "N/A",
+                            round(d21, 2) if pd.notna(d21) else "N/A",
+                            round(d50, 2) if pd.notna(d50) else "N/A",
+                            round(dw4, 2) if pd.notna(dw4) else "N/A",
+                            round(dw10, 2) if pd.notna(dw10) else "N/A"
                         ])
     except Exception as e:
         continue
@@ -210,21 +240,25 @@ for ticker in all_shortlisted:
 # ==========================================
 print("\nExporting all formatted data to Unified Google Sheet...")
 
-headers = ["Trigger Date", "Stock Symbol", "Industry Group", "Avg Rupee Vol (Cr)", "ADR %"]
+headers = [
+    "Trigger Date", "Stock Symbol", "Industry Group", "Avg Rupee Vol (Cr)", "ADR %",
+    "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)"
+]
+col_letter = chr(ord('A') + len(headers) - 1)
 
 for tab_name, matched_stocks in results.items():
     try:
         worksheet = target_ss.worksheet(tab_name)
         worksheet.clear()
     except gspread.exceptions.WorksheetNotFound:
-        worksheet = target_ss.add_worksheet(title=tab_name, rows="1000", cols="5")
+        worksheet = target_ss.add_worksheet(title=tab_name, rows="1000", cols="20")
 
     matched_stocks.sort(key=lambda x: x[0], reverse=True)
     sheet_output = [headers] + matched_stocks
 
     if len(sheet_output) > 1:
         worksheet.update(values=sheet_output, range_name='A1', value_input_option='USER_ENTERED')
-        worksheet.format('A1:E1', {
+        worksheet.format(f'A1:{col_letter}1', {
             "backgroundColor": {"red": 0.1, "green": 0.2, "blue": 0.4},
             "horizontalAlignment": "CENTER",
             "textFormat": {"foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}, "bold": True}
