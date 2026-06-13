@@ -30,13 +30,30 @@ master_ss = gc.open_by_url(SINGLE_SHEET_URL)
 target_ss = gc.open_by_url(SINGLE_SHEET_URL)
 
 # ==========================================
-# 2. GET INDUSTRY MAPPING FROM MASTER
+# 2. GET INDUSTRY MAPPING & RANKS
 # ==========================================
 print("Mapping stocks to industries from Unified Sheet...")
 master_ws = master_ss.worksheet("Avg_Rupee_Volume_Master")
 master_data = master_ws.get_all_records()
 df_master = pd.DataFrame(master_data)
 stock_to_industry = df_master.set_index('Symbol')['Industry Group'].to_dict()
+
+print("Fetching Industry Ranks...")
+industry_rank_map = {}
+try:
+    rank_ws = target_ss.worksheet("Industry Ranks")
+    rank_data = rank_ws.get_all_values()
+    if len(rank_data) > 1:
+        headers = [h.lower() for h in rank_data[0]]
+        df_ranks = pd.DataFrame(rank_data[1:], columns=headers)
+        
+        ind_col = next((c for c in headers if "industry" in c), None)
+        rank_col = next((c for c in headers if "rank" in c and "history" not in c), None)
+
+        if ind_col and rank_col:
+            industry_rank_map = df_ranks.set_index(ind_col)[rank_col].to_dict()
+except Exception as e:
+    print(f"Warning: Could not fetch Industry Ranks properly: {e}")
 
 # ==========================================
 # 3. FETCH DYNAMIC SETTINGS FROM TARGET SHEET
@@ -93,7 +110,6 @@ oneday_tracker = {}
 
 for scan, data in raw_scanner_data.items():
     if len(data) <= 1: continue
-
     lookback_days = rules_universe.get(scan, 0)
     cutoff_date_univ = latest_trading_date - pd.Timedelta(days=lookback_days)
 
@@ -103,11 +119,9 @@ for scan, data in raw_scanner_data.items():
         if not stock or stock == "STOCK SYMBOL": continue
 
         if lookback_days >= 9000:
-            if stock not in universe_tracker:
-                universe_tracker[stock] = {s: "No" for s in scanners}
+            if stock not in universe_tracker: universe_tracker[stock] = {s: "No" for s in scanners}
             universe_tracker[stock][scan] = "Yes"
-            if stock not in oneday_tracker:
-                oneday_tracker[stock] = {s: "No" for s in scanners}
+            if stock not in oneday_tracker: oneday_tracker[stock] = {s: "No" for s in scanners}
             oneday_tracker[stock][scan] = "Yes"
             continue
 
@@ -115,13 +129,11 @@ for scan, data in raw_scanner_data.items():
         except: continue
 
         if trigger_date >= cutoff_date_univ:
-            if stock not in universe_tracker:
-                universe_tracker[stock] = {s: "No" for s in scanners}
+            if stock not in universe_tracker: universe_tracker[stock] = {s: "No" for s in scanners}
             universe_tracker[stock][scan] = "Yes"
 
         if trigger_date == latest_trading_date:
-            if stock not in oneday_tracker:
-                oneday_tracker[stock] = {s: "No" for s in scanners}
+            if stock not in oneday_tracker: oneday_tracker[stock] = {s: "No" for s in scanners}
             oneday_tracker[stock][scan] = "Yes"
 
 all_unique_stocks = list(set(universe_tracker.keys()) | set(oneday_tracker.keys()))
@@ -146,18 +158,13 @@ if len(tickers) > 0:
     for i, chunk in enumerate(ticker_chunks):
         print(f" -> Downloading price batch {i+1} of {len(ticker_chunks)}...")
         success = False
-        
         for attempt in range(5):
             try:
                 chunk_data = yf.download(chunk, period="250d", group_by="ticker", threads=False, progress=False, session=session)
-                
-                if chunk_data.empty and len(chunk) > 0:
-                    raise ValueError("Empty data returned by Yahoo.")
-                    
+                if chunk_data.empty and len(chunk) > 0: raise ValueError("Empty data returned by Yahoo.")
                 all_chunks.append(chunk_data)
                 success = True
                 break 
-                
             except Exception as e:
                 wait_time = 30 * (attempt + 1)
                 print(f"    [!] Yahoo IP Blocked. Pausing script for {wait_time} seconds... (Attempt {attempt+1}/5)")
@@ -165,13 +172,10 @@ if len(tickers) > 0:
         
         if not success:
             raise SystemExit(f"🛑 CRITICAL ERROR: Yahoo permanently blocked batch {i+1}. Run the dashboard again later.")
-            
         time.sleep(5) 
 
-    if all_chunks:
-        data = pd.concat(all_chunks, axis=1)
-    else:
-        data = pd.DataFrame()
+    if all_chunks: data = pd.concat(all_chunks, axis=1)
+    else: data = pd.DataFrame()
 else:
     data = pd.DataFrame()
 
@@ -189,7 +193,6 @@ for stock in all_unique_stocks:
         df = df.dropna(subset=['Close'])
         if df.empty or len(df) < 150: continue
 
-        # Calculate 14-Day ATR manually
         df['tr1'] = df['High'] - df['Low']
         df['tr2'] = abs(df['High'] - df['Close'].shift(1))
         df['tr3'] = abs(df['Low'] - df['Close'].shift(1))
@@ -202,7 +205,6 @@ for stock in all_unique_stocks:
         ema_50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
         ema_150 = df['Close'].ewm(span=150, adjust=False).mean().iloc[-1]
 
-        # Calculate Weekly SMAs
         weekly_df = df['Close'].resample('W-FRI').last().dropna()
         if len(weekly_df) >= 10:
             wk_sma_4 = weekly_df.rolling(4).mean().iloc[-1]
@@ -211,7 +213,6 @@ for stock in all_unique_stocks:
             wk_sma_4 = np.nan
             wk_sma_10 = np.nan
 
-        # Calculate ATR Multiples (Distances)
         dist_9 = (close - ema_9) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_21 = (close - ema_21) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_50 = (close - ema_50) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
@@ -219,7 +220,9 @@ for stock in all_unique_stocks:
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
 
         rupee_vol = df['Close'] * df['Volume']
-        avg_rupee_vol_20 = rupee_vol.rolling(window=20).mean().iloc[-1]
+        
+        # THE FIX: Divide by 10,000,000 to convert raw numbers to Crores
+        avg_rupee_vol_20 = (rupee_vol.rolling(window=20).mean().iloc[-1]) / 10000000
 
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100
@@ -247,8 +250,9 @@ for stock in all_unique_stocks:
 # ==========================================
 # 5. BUILD THE THREE LISTS
 # ==========================================
+# THE FIX: Updated Header to Match Master Scanner
 headers = [
-    "Stock Symbol", "Industry Group", "ADR %", "20D Avg Rupee Vol",
+    "Stock Symbol", "Ind Rank", "Industry Group", "ADR %", "Avg Rupee Vol (Cr)",
     "1 Day Return %", "1 Week Return %", "1 Month Return %", "Prev 2M Return (Ending 1M Ago) %",
     "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)"
 ] + scanners
@@ -257,9 +261,13 @@ def format_row(stock, scan_dict):
     td = tech_data.get(stock)
     if not td: return None
     ind = stock_to_industry.get(stock, "Uncategorized")
+    
+    ind_key = ind.lower() if isinstance(ind, str) else ""
+    current_rank = industry_rank_map.get(ind_key, "N/A")
 
+    # THE FIX: Round Volume to 2 decimal places
     row = [
-        stock, ind, round(td['adr'], 2), round(td['vol'], 0),
+        stock, current_rank, ind, round(td['adr'], 2), round(td['vol'], 2),
         round(td['ret_1d'], 2), round(td['ret_1w'], 2), round(td['ret_1m'], 2),
         round(td['ret_prev_2m'], 2) if pd.notna(td['ret_prev_2m']) else "",
         round(td['dist_9'], 2) if pd.notna(td['dist_9']) else "",
@@ -306,12 +314,9 @@ def write_to_sheet(tab_name, data):
         ws = target_ss.add_worksheet(title=tab_name, rows="1000", cols="30")
 
     if len(data) > 1:
-        # Dynamically calculate the letter of the final column so formatting doesn't break
         col_letter = chr(ord('A') + len(headers) - 1)
-        
         ws.update(values=data, range_name='A1', value_input_option='USER_ENTERED')
         ws.freeze(rows=1)
-        
         ws.format(f'A1:{col_letter}1', {
             "backgroundColor": {"red": 0.1, "green": 0.2, "blue": 0.4},
             "horizontalAlignment": "CENTER",
