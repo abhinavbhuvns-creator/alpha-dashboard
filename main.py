@@ -28,7 +28,6 @@ gc = gspread.authorize(creds)
 # ==========================================
 # 2. READ UNIFIED MASTER SHEET
 # ==========================================
-# UNIFIED URL: Everything is in the Dashboard Sheet now!
 SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
 spreadsheet = gc.open_by_url(SINGLE_SHEET_URL)
 
@@ -45,9 +44,10 @@ except Exception as e:
 tickers = (df_master['Symbol'].str.strip() + '.NS').tolist()
 
 # ==========================================
-# 3. BATCH DOWNLOAD (1 YEAR OF DATA)
+# 3. BATCH DOWNLOAD (2 YEARS OF DATA)
 # ==========================================
-print(f"Downloading 1 year of price history for {len(tickers)} stocks...")
+# Bumped to 2y so Moving Averages have enough history to smooth out correctly
+print(f"Downloading 2 years of price history for {len(tickers)} stocks...")
 
 def chunker(seq, size):
     return (seq[pos:pos + size] for pos in range(0, len(seq), size))
@@ -57,7 +57,7 @@ all_chunks = []
 
 for i, chunk in enumerate(ticker_chunks):
     print(f" -> Fetching batch {i+1} of {len(ticker_chunks)}...")
-    chunk_data = yf.download(chunk, period="1y", group_by="ticker", threads=True, progress=False)
+    chunk_data = yf.download(chunk, period="2y", group_by="ticker", threads=True, progress=False)
     all_chunks.append(chunk_data)
     if i < len(ticker_chunks) - 1:
         time.sleep(2) 
@@ -65,9 +65,9 @@ for i, chunk in enumerate(ticker_chunks):
 data = pd.concat(all_chunks, axis=1)
 
 # ==========================================
-# 4. CALCULATE NEW COLUMNS & SQUEEZE METRIC
+# 4. CALCULATE NEW COLUMNS, ATR & ADR
 # ==========================================
-print("Calculating Returns, EMAs, Highs, and Custom Momentum...")
+print("Calculating Returns, EMAs, ATR Distances, and Custom Momentum...")
 tech_metrics = {}
 
 for ticker in tickers:
@@ -79,12 +79,43 @@ for ticker in tickers:
             df = data[ticker].copy()
 
         df = df.dropna(subset=['Close'])
-        if len(df) < 2: continue
+        if len(df) < 60: continue # Ensure enough data for SMAs and EMAs
 
+        # --- Base Metrics ---
         close = df['Close'].iloc[-1]
-        high_52w = df['High'].max()
-        ema_21 = df['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
+        high_52w = df['High'].tail(252).max() # Look only at the last year (252 trading days)
+        
+        # --- ATR & ADR Math ---
+        df['tr1'] = df['High'] - df['Low']
+        df['tr2'] = abs(df['High'] - df['Close'].shift(1))
+        df['tr3'] = abs(df['Low'] - df['Close'].shift(1))
+        df['TR'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+        atr_14 = df['TR'].rolling(14).mean().iloc[-1]
+        
+        daily_range = (df['High'] / df['Low']) - 1
+        adr_20 = daily_range.rolling(window=20).mean().iloc[-1] * 100
 
+        # --- Moving Averages ---
+        ema_9 = df['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
+        ema_21 = df['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
+        ema_50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+        
+        weekly_df = df['Close'].resample('W-FRI').last().dropna()
+        if len(weekly_df) >= 10:
+            wk_sma_4 = weekly_df.rolling(4).mean().iloc[-1]
+            wk_sma_10 = weekly_df.rolling(10).mean().iloc[-1]
+        else:
+            wk_sma_4 = np.nan
+            wk_sma_10 = np.nan
+
+        # --- ATR Distances ---
+        dist_9 = (close - ema_9) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+        dist_21_atr = (close - ema_21) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+        dist_50 = (close - ema_50) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+        dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+        dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+
+        # --- Returns ---
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100
         ret_1m = df['Close'].pct_change(periods=21).iloc[-1] * 100 if len(df) >= 22 else None
@@ -101,7 +132,9 @@ for ticker in tickers:
         else:
             ret_past_2m_till_last_month = None
 
+        # Build Output Dictionary
         tech_metrics[stock_sym] = {
+            "ADR %": round(adr_20, 2) if pd.notna(adr_20) else "",
             "1 Day Return %": round(ret_1d, 2) if pd.notna(ret_1d) else "",
             "1 Week Return %": round(ret_1w, 2) if pd.notna(ret_1w) else "",
             "1 Month Return %": round(ret_1m, 2) if pd.notna(ret_1m) else "",
@@ -109,7 +142,12 @@ for ticker in tickers:
             "3 Month Return %": round(ret_3m, 2) if pd.notna(ret_3m) else "",
             "6 Month Return %": round(ret_6m, 2) if pd.notna(ret_6m) else "",
             "% Dist from 21 EMA": round(dist_ema21, 2) if pd.notna(dist_ema21) else "",
-            "% Dist from 52W High": round(dist_high, 2) if pd.notna(dist_high) else ""
+            "% Dist from 52W High": round(dist_high, 2) if pd.notna(dist_high) else "",
+            "9 EMA (ATR)": round(dist_9, 2) if pd.notna(dist_9) else "",
+            "21 EMA (ATR)": round(dist_21_atr, 2) if pd.notna(dist_21_atr) else "",
+            "50 EMA (ATR)": round(dist_50, 2) if pd.notna(dist_50) else "",
+            "4W SMA (ATR)": round(dist_w4, 2) if pd.notna(dist_w4) else "",
+            "10W SMA (ATR)": round(dist_w10, 2) if pd.notna(dist_w10) else ""
         }
     except Exception:
         continue
@@ -127,7 +165,7 @@ try:
     target_ws = spreadsheet.worksheet(TARGET_TAB_NAME)
     target_ws.clear()
 except gspread.exceptions.WorksheetNotFound:
-    target_ws = spreadsheet.add_worksheet(title=TARGET_TAB_NAME, rows="2500", cols="15")
+    target_ws = spreadsheet.add_worksheet(title=TARGET_TAB_NAME, rows="2500", cols="25")
 
 sheet_output = [df_final.columns.values.tolist()] + df_final.values.tolist()
 target_ws.update(values=sheet_output, range_name='A1', value_input_option='USER_ENTERED')
