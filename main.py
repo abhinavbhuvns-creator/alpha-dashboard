@@ -7,15 +7,18 @@ import numpy as np
 import yfinance as yf
 import gspread
 from google.oauth2.service_account import Credentials
+import matplotlib.pyplot as plt
 
 warnings.simplefilter(action='ignore')
 pd.options.mode.chained_assignment = None
+
+# Create local charts directory if it doesn't exist
+os.makedirs('charts', exist_ok=True)
 
 # ==========================================
 # 1. AUTHENTICATE USING GITHUB SECRETS
 # ==========================================
 print("Authenticating with Google Service Account...")
-
 creds_json = os.environ.get('GOOGLE_CREDENTIALS')
 if not creds_json:
     raise SystemExit("🛑 Error: GOOGLE_CREDENTIALS not found in GitHub Secrets.")
@@ -46,7 +49,7 @@ tickers = (df_master['Symbol'].str.strip() + '.NS').tolist()
 # ==========================================
 # 3. BATCH DOWNLOAD (2 YEARS OF DATA)
 # ==========================================
-print(f"Downloading 2 years of price history for {len(tickers)} stocks...")
+print(f"Downloading price history for {len(tickers)} stocks...")
 
 def chunker(seq, size):
     return (seq[pos:pos + size] for pos in range(0, len(seq), size))
@@ -64,10 +67,22 @@ for i, chunk in enumerate(ticker_chunks):
 data = pd.concat(all_chunks, axis=1)
 
 # ==========================================
-# 4. CALCULATE NEW COLUMNS, ATR & ADR
+# 4. TECH METRICS & CHART GENERATION
 # ==========================================
-print("Calculating Returns, EMAs, ATR Distances, Pocket Pivots, and Custom Momentum...")
+print("Generating Sheet Analytics & Custom Visual Chart PNGs...")
 tech_metrics = {}
+
+# Configure Matplotlib for seamless dark-mode plotting
+plt.style.use('dark_background')
+plt.rcParams.update({
+    'figure.facecolor': '#131722',
+    'axes.facecolor': '#131722',
+    'axes.edgecolor': '#2a2e39',
+    'grid.color': '#2a2e39',
+    'xtick.color': '#8a93a6',
+    'ytick.color': '#8a93a6',
+    'font.size': 8
+})
 
 for ticker in tickers:
     stock_sym = ticker.replace('.NS', '')
@@ -80,9 +95,11 @@ for ticker in tickers:
         df = df.dropna(subset=['Close'])
         if len(df) < 60: continue 
 
+        # --- Base Variables ---
         close = df['Close'].iloc[-1]
         high_52w = df['High'].tail(252).max() 
         
+        # --- Volatility indicators ---
         df['tr1'] = df['High'] - df['Low']
         df['tr2'] = abs(df['High'] - df['Close'].shift(1))
         df['tr3'] = abs(df['Low'] - df['Close'].shift(1))
@@ -91,10 +108,10 @@ for ticker in tickers:
         
         daily_range = (df['High'] / df['Low']) - 1
         adr_20 = daily_range.rolling(window=20).mean().iloc[-1] * 100
-
         avg_vol_20 = df['Volume'].rolling(window=20).mean().iloc[-1]
         rvol_20 = (df['Volume'].iloc[-1] / avg_vol_20) if avg_vol_20 > 0 else np.nan
 
+        # --- Pocket Pivot Processing ---
         is_down_day = df['Close'] < df['Close'].shift(1)
         daily_down_vols = df['Volume'].where(is_down_day, 0)
         max_down_vol_10d = daily_down_vols.shift(1).rolling(10).max()
@@ -102,11 +119,12 @@ for ticker in tickers:
         daily_pp = is_up_day & (df['Volume'] > max_down_vol_10d)
         ppv_10d_count = daily_pp.tail(10).sum()
 
-        ema_4 = df['Close'].ewm(span=4, adjust=False).mean().iloc[-1]
-        ema_6 = df['Close'].ewm(span=6, adjust=False).mean().iloc[-1]
-        ema_9 = df['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
-        ema_21 = df['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
-        ema_50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+        # --- Moving Averages (Calculated for full length to avoid smoothing distortion) ---
+        df['ema4'] = df['Close'].ewm(span=4, adjust=False).mean()
+        df['ema6'] = df['Close'].ewm(span=6, adjust=False).mean()
+        df['ema9'] = df['Close'].ewm(span=9, adjust=False).mean()
+        df['ema21'] = df['Close'].ewm(span=21, adjust=False).mean()
+        df['ema50'] = df['Close'].ewm(span=50, adjust=False).mean()
         
         weekly_df = df.resample('W-FRI').agg({'Close': 'last', 'Volume': 'sum'}).dropna()
         if len(weekly_df) >= 10:
@@ -119,25 +137,24 @@ for ticker in tickers:
             weekly_pp = is_up_week & (weekly_df['Volume'] > max_down_vol_10w)
             ppv_4w_count = weekly_pp.tail(4).sum()
         else:
-            wk_sma_4 = np.nan
-            wk_sma_10 = np.nan
-            ppv_4w_count = 0
+            wk_sma_4 = np.nan; wk_sma_10 = np.nan; ppv_4w_count = 0
 
-        dist_4 = (close - ema_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
-        dist_6 = (close - ema_6) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
-        dist_9 = (close - ema_9) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
-        dist_21 = (close - ema_21) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
-        dist_50 = (close - ema_50) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+        # --- ATR Distances ---
+        dist_4 = (close - df['ema4'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+        dist_6 = (close - df['ema6'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+        dist_9 = (close - df['ema9'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+        dist_21 = (close - df['ema21'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+        dist_50 = (close - df['ema50'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
 
+        # --- Return Arrays ---
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100
         ret_1m = df['Close'].pct_change(periods=21).iloc[-1] * 100 if len(df) >= 22 else None
         ret_3m = df['Close'].pct_change(periods=63).iloc[-1] * 100 if len(df) >= 64 else None
         ret_6m = df['Close'].pct_change(periods=126).iloc[-1] * 100 if len(df) >= 127 else None
-
-        dist_ema21 = ((close - ema_21) / ema_21) * 100
+        dist_ema21 = ((close - df['ema21'].iloc[-1]) / df['ema21'].iloc[-1]) * 100
         dist_high = ((close - high_52w) / high_52w) * 100
 
         if len(df) >= 64:
@@ -147,6 +164,7 @@ for ticker in tickers:
         else:
             ret_past_2m_till_last_month = None
 
+        # Build Sheet Output Dictionary
         tech_metrics[stock_sym] = {
             "ADR %": round(adr_20, 2) if pd.notna(adr_20) else "",
             "RVOL (20D)": round(rvol_20, 2) if pd.notna(rvol_20) else "",
@@ -160,11 +178,11 @@ for ticker in tickers:
             "6 Month Return %": round(ret_6m, 2) if pd.notna(ret_6m) else "",
             "% Dist from 21 EMA": round(dist_ema21, 2) if pd.notna(dist_ema21) else "",
             "% Dist from 52W High": round(dist_high, 2) if pd.notna(dist_high) else "",
-            "4 EMA": round(ema_4, 2) if pd.notna(ema_4) else "",
-            "6 EMA": round(ema_6, 2) if pd.notna(ema_6) else "",
-            "9 EMA": round(ema_9, 2) if pd.notna(ema_9) else "",
-            "21 EMA": round(ema_21, 2) if pd.notna(ema_21) else "",
-            "50 EMA": round(ema_50, 2) if pd.notna(ema_50) else "",
+            "4 EMA": round(df['ema4'].iloc[-1], 2) if pd.notna(df['ema4'].iloc[-1]) else "",
+            "6 EMA": round(df['ema6'].iloc[-1], 2) if pd.notna(df['ema6'].iloc[-1]) else "",
+            "9 EMA": round(df['ema9'].iloc[-1], 2) if pd.notna(df['ema9'].iloc[-1]) else "",
+            "21 EMA": round(df['ema21'].iloc[-1], 2) if pd.notna(df['ema21'].iloc[-1]) else "",
+            "50 EMA": round(df['ema50'].iloc[-1], 2) if pd.notna(df['ema50'].iloc[-1]) else "",
             "4 EMA (ATR)": round(dist_4, 2) if pd.notna(dist_4) else "",
             "6 EMA (ATR)": round(dist_6, 2) if pd.notna(dist_6) else "",
             "9 EMA (ATR)": round(dist_9, 2) if pd.notna(dist_9) else "",
@@ -173,13 +191,62 @@ for ticker in tickers:
             "4W SMA (ATR)": round(dist_w4, 2) if pd.notna(dist_w4) else "",
             "10W SMA (ATR)": round(dist_w10, 2) if pd.notna(dist_w10) else ""
         }
-    except Exception:
+
+        # ==========================================
+        # GENERATE FINVIZ-STYLE STATIC CHART
+        # ==========================================
+        # Subset to last 65 trading days (~3 Months)
+        df_chart = df.tail(65)
+        
+        # Configure layout with explicit aspect sizing to save on image resolution weight
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(4, 2.5), gridspec_kw={'height_ratios': [3, 1]})
+        fig.subplots_adjust(left=0.12, right=0.95, top=0.9, bottom=0.1, hspace=0.05)
+        
+        # Plot Candles Manually (Saves memory over heavy financial plotting overhead)
+        idx = np.arange(len(df_chart))
+        up = df_chart['Close'] >= df_chart['Open']
+        down = ~up
+        
+        # Draw Wicks & Bodies
+        ax1.vlines(idx[up], df_chart['Low'][up], df_chart['High'][up], color='#26a69a', linewidth=1)
+        ax1.vlines(idx[down], df_chart['Low'][down], df_chart['High'][down], color='#ef5350', linewidth=1)
+        ax1.bar(idx[up], df_chart['Close'][up] - df_chart['Open'][up], bottom=df_chart['Open'][up], color='#26a69a', width=0.6)
+        ax1.bar(idx[down], df_chart['Open'][down] - df_chart['Close'][down], bottom=df_chart['Close'][down], color='#ef5350', width=0.6)
+        
+        # Overlay Specific Custom Color Lines
+        ax1.plot(idx, df_chart['ema4'], color='#87CEFA', linewidth=0.8, label='4 EMA')
+        ax1.plot(idx, df_chart['ema9'], color='#800080', linewidth=0.8, label='9 EMA')
+        ax1.plot(idx, df_chart['ema21'], color='#CC9900', linewidth=0.8, label='21 EMA')
+        ax1.plot(idx, df_chart['ema50'], color='#FF0000', linewidth=0.8, label='50 EMA')
+        
+        # Title & Configuration Details
+        ax1.set_title(f"{stock_sym}", color='white', fontsize=10, fontweight='bold', loc='left', pad=2)
+        ax1.grid(True, alpha=0.2)
+        ax1.set_xticklabels([])
+        
+        # Render Volume Area Chart Matrix
+        ax2.bar(idx[up], df_chart['Volume'][up], color='rgba(38, 166, 154, 0.4)', width=0.6)
+        ax2.bar(idx[down], df_chart['Volume'][down], color='rgba(239, 83, 80, 0.4)', width=0.6)
+        ax2.grid(True, alpha=0.2)
+        ax2.set_yticklabels([])
+        
+        # Map Dates carefully across the scale limits
+        step = max(1, len(df_chart) // 3)
+        ax2.set_xticks(idx[::step])
+        ax2.set_xticklabels(df_chart.index.strftime('%b %d')[::step], rotation=0)
+
+        # Output out compressed binary file to the repository directory
+        plt.savefig(f"charts/{stock_sym}.png", dpi=120, facecolor=fig.get_facecolor(), edgecolor='none')
+        plt.close(fig)
+
+    except Exception as e:
+        print(f"Error processing {stock_sym}: {e}")
         continue
 
 # ==========================================
 # 5. MERGE DATA & WRITE TO GOOGLE SHEET
 # ==========================================
-print("Merging data and formatting output...")
+print("Updating Google Sheets Master Framework...")
 df_tech = pd.DataFrame.from_dict(tech_metrics, orient='index').reset_index()
 df_tech.rename(columns={'index': 'Symbol'}, inplace=True)
 df_final = pd.merge(df_master, df_tech, on='Symbol', how='left').fillna("")
@@ -204,17 +271,13 @@ try:
     records = ws_growth.get_all_records()
     df_etf_stocks = pd.DataFrame(records)
     
-    # Finds the ticker column regardless of what you named the header
     sym_col = next((c for c in df_etf_stocks.columns if 'symbol' in c.lower() or 'ticker' in c.lower()), None)
-    
     if sym_col:
         etf_tickers = (df_etf_stocks[sym_col].astype(str).str.strip().str.upper() + '.NS').tolist()
         valid_tickers = [t for t in etf_tickers if t in data.columns.levels[0]]
         
         if valid_tickers:
-            # Lookback exactly 252 trading days (1 Year)
             df_hist = data[valid_tickers].tail(252).ffill().bfill()
-            
             index_open = pd.Series(0.0, index=df_hist.index)
             index_high = pd.Series(0.0, index=df_hist.index)
             index_low = pd.Series(0.0, index=df_hist.index)
@@ -224,10 +287,7 @@ try:
             for t in valid_tickers:
                 c_series = df_hist[t]['Close']
                 if c_series.empty or pd.isna(c_series.iloc[0]) or c_series.iloc[0] == 0: continue
-                
-                # Base 100 Normalization
                 factor = 100.0 / c_series.iloc[0]
-                
                 index_open += df_hist[t]['Open'] * factor
                 index_high += df_hist[t]['High'] * factor
                 index_low += df_hist[t]['Low'] * factor
@@ -242,7 +302,6 @@ try:
                     'Close': round(index_close / valid_count, 2)
                 })
                 
-                # Calculate True Historical EMAs on the newly created Index
                 df_index['9 EMA'] = round(df_index['Close'].ewm(span=9, adjust=False).mean(), 2)
                 df_index['21 EMA'] = round(df_index['Close'].ewm(span=21, adjust=False).mean(), 2)
                 df_index['50 EMA'] = round(df_index['Close'].ewm(span=50, adjust=False).mean(), 2)
@@ -259,8 +318,7 @@ try:
                     
                 out_data = [df_index.columns.values.tolist()] + df_index.values.tolist()
                 out_ws.update(values=out_data, range_name='A1')
-                print(" -> Successfully generated Equal-Weight Chart_GROWTH50 tab.")
 except Exception as e:
     print(f" -> Could not build ETF chart: {e}")
 
-print(f"\n✅ Success! Generated '{TARGET_TAB_NAME}' and custom ETF charts.")
+print(f"\n✅ Success! Systems completely aligned.")
