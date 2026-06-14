@@ -66,7 +66,7 @@ data = pd.concat(all_chunks, axis=1)
 # ==========================================
 # 4. CALCULATE NEW COLUMNS, ATR & ADR
 # ==========================================
-print("Calculating Returns, EMAs, ATR Distances, and Custom Momentum...")
+print("Calculating Returns, EMAs, ATR Distances, Pocket Pivots, and Custom Momentum...")
 tech_metrics = {}
 
 for ticker in tickers:
@@ -98,6 +98,14 @@ for ticker in tickers:
         avg_vol_20 = df['Volume'].rolling(window=20).mean().iloc[-1]
         rvol_20 = (df['Volume'].iloc[-1] / avg_vol_20) if avg_vol_20 > 0 else np.nan
 
+        # --- Daily Pocket Pivot Logic (10D Count) ---
+        is_down_day = df['Close'] < df['Close'].shift(1)
+        daily_down_vols = df['Volume'].where(is_down_day, 0)
+        max_down_vol_10d = daily_down_vols.shift(1).rolling(10).max()
+        is_up_day = df['Close'] > df['Close'].shift(1)
+        daily_pp = is_up_day & (df['Volume'] > max_down_vol_10d)
+        ppv_10d_count = daily_pp.tail(10).sum()
+
         # --- Moving Averages ---
         ema_4 = df['Close'].ewm(span=4, adjust=False).mean().iloc[-1]
         ema_6 = df['Close'].ewm(span=6, adjust=False).mean().iloc[-1]
@@ -105,13 +113,25 @@ for ticker in tickers:
         ema_21 = df['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
         ema_50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
         
-        weekly_df = df['Close'].resample('W-FRI').last().dropna()
+        # Resample for Weekly Data (Close and Volume)
+        weekly_df = df.resample('W-FRI').agg({'Close': 'last', 'Volume': 'sum'}).dropna()
         if len(weekly_df) >= 10:
-            wk_sma_4 = weekly_df.rolling(4).mean().iloc[-1]
-            wk_sma_10 = weekly_df.rolling(10).mean().iloc[-1]
+            wk_sma_4 = weekly_df['Close'].rolling(4).mean().iloc[-1]
+            wk_sma_10 = weekly_df['Close'].rolling(10).mean().iloc[-1]
         else:
             wk_sma_4 = np.nan
             wk_sma_10 = np.nan
+
+        # --- Weekly Pocket Pivot Logic (4W Count) ---
+        if len(weekly_df) >= 10:
+            is_down_week = weekly_df['Close'] < weekly_df['Close'].shift(1)
+            weekly_down_vols = weekly_df['Volume'].where(is_down_week, 0)
+            max_down_vol_10w = weekly_down_vols.shift(1).rolling(10).max()
+            is_up_week = weekly_df['Close'] > weekly_df['Close'].shift(1)
+            weekly_pp = is_up_week & (weekly_df['Volume'] > max_down_vol_10w)
+            ppv_4w_count = weekly_pp.tail(4).sum()
+        else:
+            ppv_4w_count = 0
 
         # --- ATR Distances ---
         dist_4 = (close - ema_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
@@ -143,6 +163,9 @@ for ticker in tickers:
         tech_metrics[stock_sym] = {
             "ADR %": round(adr_20, 2) if pd.notna(adr_20) else "",
             "RVOL (20D)": round(rvol_20, 2) if pd.notna(rvol_20) else "",
+            "PPV (10D)": int(ppv_10d_count) if pd.notna(ppv_10d_count) else 0,
+            "PPV (4W)": int(ppv_4w_count) if pd.notna(ppv_4w_count) else 0,
+            
             "1 Day Return %": round(ret_1d, 2) if pd.notna(ret_1d) else "",
             "1 Week Return %": round(ret_1w, 2) if pd.notna(ret_1w) else "",
             "1 Month Return %": round(ret_1m, 2) if pd.notna(ret_1m) else "",
@@ -152,14 +175,12 @@ for ticker in tickers:
             "% Dist from 21 EMA": round(dist_ema21, 2) if pd.notna(dist_ema21) else "",
             "% Dist from 52W High": round(dist_high, 2) if pd.notna(dist_high) else "",
             
-            # Raw EMA values for Query Builder sorting
             "4 EMA": round(ema_4, 2) if pd.notna(ema_4) else "",
             "6 EMA": round(ema_6, 2) if pd.notna(ema_6) else "",
             "9 EMA": round(ema_9, 2) if pd.notna(ema_9) else "",
             "21 EMA": round(ema_21, 2) if pd.notna(ema_21) else "",
             "50 EMA": round(ema_50, 2) if pd.notna(ema_50) else "",
 
-            # ATR Distances
             "4 EMA (ATR)": round(dist_4, 2) if pd.notna(dist_4) else "",
             "6 EMA (ATR)": round(dist_6, 2) if pd.notna(dist_6) else "",
             "9 EMA (ATR)": round(dist_9, 2) if pd.notna(dist_9) else "",
@@ -184,7 +205,7 @@ try:
     target_ws = spreadsheet.worksheet(TARGET_TAB_NAME)
     target_ws.clear()
 except gspread.exceptions.WorksheetNotFound:
-    target_ws = spreadsheet.add_worksheet(title=TARGET_TAB_NAME, rows="2500", cols="35")
+    target_ws = spreadsheet.add_worksheet(title=TARGET_TAB_NAME, rows="2500", cols="40")
 
 sheet_output = [df_final.columns.values.tolist()] + df_final.values.tolist()
 target_ws.update(values=sheet_output, range_name='A1', value_input_option='USER_ENTERED')
