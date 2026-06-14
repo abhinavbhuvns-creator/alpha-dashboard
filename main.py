@@ -80,11 +80,9 @@ for ticker in tickers:
         df = df.dropna(subset=['Close'])
         if len(df) < 60: continue 
 
-        # --- Base Metrics ---
         close = df['Close'].iloc[-1]
         high_52w = df['High'].tail(252).max() 
         
-        # --- ATR & ADR Math ---
         df['tr1'] = df['High'] - df['Low']
         df['tr2'] = abs(df['High'] - df['Close'].shift(1))
         df['tr3'] = abs(df['Low'] - df['Close'].shift(1))
@@ -94,11 +92,9 @@ for ticker in tickers:
         daily_range = (df['High'] / df['Low']) - 1
         adr_20 = daily_range.rolling(window=20).mean().iloc[-1] * 100
 
-        # --- RVOL (20 Days) ---
         avg_vol_20 = df['Volume'].rolling(window=20).mean().iloc[-1]
         rvol_20 = (df['Volume'].iloc[-1] / avg_vol_20) if avg_vol_20 > 0 else np.nan
 
-        # --- Daily Pocket Pivot Logic (10D Count) ---
         is_down_day = df['Close'] < df['Close'].shift(1)
         daily_down_vols = df['Volume'].where(is_down_day, 0)
         max_down_vol_10d = daily_down_vols.shift(1).rolling(10).max()
@@ -106,24 +102,16 @@ for ticker in tickers:
         daily_pp = is_up_day & (df['Volume'] > max_down_vol_10d)
         ppv_10d_count = daily_pp.tail(10).sum()
 
-        # --- Moving Averages ---
         ema_4 = df['Close'].ewm(span=4, adjust=False).mean().iloc[-1]
         ema_6 = df['Close'].ewm(span=6, adjust=False).mean().iloc[-1]
         ema_9 = df['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
         ema_21 = df['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
         ema_50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
         
-        # Resample for Weekly Data (Close and Volume)
         weekly_df = df.resample('W-FRI').agg({'Close': 'last', 'Volume': 'sum'}).dropna()
         if len(weekly_df) >= 10:
             wk_sma_4 = weekly_df['Close'].rolling(4).mean().iloc[-1]
             wk_sma_10 = weekly_df['Close'].rolling(10).mean().iloc[-1]
-        else:
-            wk_sma_4 = np.nan
-            wk_sma_10 = np.nan
-
-        # --- Weekly Pocket Pivot Logic (4W Count) ---
-        if len(weekly_df) >= 10:
             is_down_week = weekly_df['Close'] < weekly_df['Close'].shift(1)
             weekly_down_vols = weekly_df['Volume'].where(is_down_week, 0)
             max_down_vol_10w = weekly_down_vols.shift(1).rolling(10).max()
@@ -131,9 +119,10 @@ for ticker in tickers:
             weekly_pp = is_up_week & (weekly_df['Volume'] > max_down_vol_10w)
             ppv_4w_count = weekly_pp.tail(4).sum()
         else:
+            wk_sma_4 = np.nan
+            wk_sma_10 = np.nan
             ppv_4w_count = 0
 
-        # --- ATR Distances ---
         dist_4 = (close - ema_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_6 = (close - ema_6) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_9 = (close - ema_9) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
@@ -142,7 +131,6 @@ for ticker in tickers:
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
 
-        # --- Returns ---
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100
         ret_1m = df['Close'].pct_change(periods=21).iloc[-1] * 100 if len(df) >= 22 else None
@@ -159,13 +147,11 @@ for ticker in tickers:
         else:
             ret_past_2m_till_last_month = None
 
-        # Build Output Dictionary
         tech_metrics[stock_sym] = {
             "ADR %": round(adr_20, 2) if pd.notna(adr_20) else "",
             "RVOL (20D)": round(rvol_20, 2) if pd.notna(rvol_20) else "",
             "PPV (10D)": int(ppv_10d_count) if pd.notna(ppv_10d_count) else 0,
             "PPV (4W)": int(ppv_4w_count) if pd.notna(ppv_4w_count) else 0,
-            
             "1 Day Return %": round(ret_1d, 2) if pd.notna(ret_1d) else "",
             "1 Week Return %": round(ret_1w, 2) if pd.notna(ret_1w) else "",
             "1 Month Return %": round(ret_1m, 2) if pd.notna(ret_1m) else "",
@@ -174,13 +160,11 @@ for ticker in tickers:
             "6 Month Return %": round(ret_6m, 2) if pd.notna(ret_6m) else "",
             "% Dist from 21 EMA": round(dist_ema21, 2) if pd.notna(dist_ema21) else "",
             "% Dist from 52W High": round(dist_high, 2) if pd.notna(dist_high) else "",
-            
             "4 EMA": round(ema_4, 2) if pd.notna(ema_4) else "",
             "6 EMA": round(ema_6, 2) if pd.notna(ema_6) else "",
             "9 EMA": round(ema_9, 2) if pd.notna(ema_9) else "",
             "21 EMA": round(ema_21, 2) if pd.notna(ema_21) else "",
             "50 EMA": round(ema_50, 2) if pd.notna(ema_50) else "",
-
             "4 EMA (ATR)": round(dist_4, 2) if pd.notna(dist_4) else "",
             "6 EMA (ATR)": round(dist_6, 2) if pd.notna(dist_6) else "",
             "9 EMA (ATR)": round(dist_9, 2) if pd.notna(dist_9) else "",
@@ -200,7 +184,6 @@ df_tech = pd.DataFrame.from_dict(tech_metrics, orient='index').reset_index()
 df_tech.rename(columns={'index': 'Symbol'}, inplace=True)
 df_final = pd.merge(df_master, df_tech, on='Symbol', how='left').fillna("")
 
-print(f"Writing data to new tab: '{TARGET_TAB_NAME}'...")
 try:
     target_ws = spreadsheet.worksheet(TARGET_TAB_NAME)
     target_ws.clear()
@@ -212,4 +195,72 @@ target_ws.update(values=sheet_output, range_name='A1', value_input_option='USER_
 target_ws.freeze(rows=1)
 target_ws.format('A1:Z1', {'textFormat': {'bold': True}, "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}})
 
-print(f"✅ Success! Generated '{TARGET_TAB_NAME}' with {len(df_final)} enriched stocks.")
+# ==========================================
+# 6. BUILD SYNTHETIC ETF CHARTS (GROWTH50)
+# ==========================================
+print("\nBuilding Synthetic Equal-Weight ETF for GROWTH50...")
+try:
+    ws_growth = spreadsheet.worksheet("GROWTH50")
+    records = ws_growth.get_all_records()
+    df_etf_stocks = pd.DataFrame(records)
+    
+    # Finds the ticker column regardless of what you named the header
+    sym_col = next((c for c in df_etf_stocks.columns if 'symbol' in c.lower() or 'ticker' in c.lower()), None)
+    
+    if sym_col:
+        etf_tickers = (df_etf_stocks[sym_col].astype(str).str.strip().str.upper() + '.NS').tolist()
+        valid_tickers = [t for t in etf_tickers if t in data.columns.levels[0]]
+        
+        if valid_tickers:
+            # Lookback exactly 252 trading days (1 Year)
+            df_hist = data[valid_tickers].tail(252).ffill().bfill()
+            
+            index_open = pd.Series(0.0, index=df_hist.index)
+            index_high = pd.Series(0.0, index=df_hist.index)
+            index_low = pd.Series(0.0, index=df_hist.index)
+            index_close = pd.Series(0.0, index=df_hist.index)
+            
+            valid_count = 0
+            for t in valid_tickers:
+                c_series = df_hist[t]['Close']
+                if c_series.empty or pd.isna(c_series.iloc[0]) or c_series.iloc[0] == 0: continue
+                
+                # Base 100 Normalization
+                factor = 100.0 / c_series.iloc[0]
+                
+                index_open += df_hist[t]['Open'] * factor
+                index_high += df_hist[t]['High'] * factor
+                index_low += df_hist[t]['Low'] * factor
+                index_close += df_hist[t]['Close'] * factor
+                valid_count += 1
+            
+            if valid_count > 0:
+                df_index = pd.DataFrame({
+                    'Open': round(index_open / valid_count, 2),
+                    'High': round(index_high / valid_count, 2),
+                    'Low': round(index_low / valid_count, 2),
+                    'Close': round(index_close / valid_count, 2)
+                })
+                
+                # Calculate True Historical EMAs on the newly created Index
+                df_index['9 EMA'] = round(df_index['Close'].ewm(span=9, adjust=False).mean(), 2)
+                df_index['21 EMA'] = round(df_index['Close'].ewm(span=21, adjust=False).mean(), 2)
+                df_index['50 EMA'] = round(df_index['Close'].ewm(span=50, adjust=False).mean(), 2)
+                
+                df_index.reset_index(inplace=True)
+                df_index['Date'] = df_index['Date'].dt.strftime('%Y-%m-%d')
+                
+                out_tab = "Chart_GROWTH50"
+                try:
+                    out_ws = spreadsheet.worksheet(out_tab)
+                    out_ws.clear()
+                except:
+                    out_ws = spreadsheet.add_worksheet(title=out_tab, rows="300", cols="10")
+                    
+                out_data = [df_index.columns.values.tolist()] + df_index.values.tolist()
+                out_ws.update(values=out_data, range_name='A1')
+                print(" -> Successfully generated Equal-Weight Chart_GROWTH50 tab.")
+except Exception as e:
+    print(f" -> Could not build ETF chart: {e}")
+
+print(f"\n✅ Success! Generated '{TARGET_TAB_NAME}' and custom ETF charts.")
