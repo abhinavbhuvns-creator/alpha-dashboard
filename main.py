@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import gspread
+import shutil
 from google.oauth2.service_account import Credentials
 import matplotlib.pyplot as plt
 
@@ -95,11 +96,9 @@ for ticker in tickers:
         df = df.dropna(subset=['Close'])
         if len(df) < 60: continue 
 
-        # --- Base Variables ---
         close = df['Close'].iloc[-1]
         high_52w = df['High'].tail(252).max() 
         
-        # --- Volatility indicators ---
         df['tr1'] = df['High'] - df['Low']
         df['tr2'] = abs(df['High'] - df['Close'].shift(1))
         df['tr3'] = abs(df['Low'] - df['Close'].shift(1))
@@ -111,7 +110,6 @@ for ticker in tickers:
         avg_vol_20 = df['Volume'].rolling(window=20).mean().iloc[-1]
         rvol_20 = (df['Volume'].iloc[-1] / avg_vol_20) if avg_vol_20 > 0 else np.nan
 
-        # --- Pocket Pivot Processing ---
         is_down_day = df['Close'] < df['Close'].shift(1)
         daily_down_vols = df['Volume'].where(is_down_day, 0)
         max_down_vol_10d = daily_down_vols.shift(1).rolling(10).max()
@@ -119,7 +117,6 @@ for ticker in tickers:
         daily_pp = is_up_day & (df['Volume'] > max_down_vol_10d)
         ppv_10d_count = daily_pp.tail(10).sum()
 
-        # --- Moving Averages (Calculated for full length to avoid smoothing distortion) ---
         df['ema4'] = df['Close'].ewm(span=4, adjust=False).mean()
         df['ema6'] = df['Close'].ewm(span=6, adjust=False).mean()
         df['ema9'] = df['Close'].ewm(span=9, adjust=False).mean()
@@ -139,7 +136,6 @@ for ticker in tickers:
         else:
             wk_sma_4 = np.nan; wk_sma_10 = np.nan; ppv_4w_count = 0
 
-        # --- ATR Distances ---
         dist_4 = (close - df['ema4'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_6 = (close - df['ema6'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_9 = (close - df['ema9'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
@@ -148,7 +144,6 @@ for ticker in tickers:
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
 
-        # --- Return Arrays ---
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100
         ret_1m = df['Close'].pct_change(periods=21).iloc[-1] * 100 if len(df) >= 22 else None
@@ -164,7 +159,6 @@ for ticker in tickers:
         else:
             ret_past_2m_till_last_month = None
 
-        # Build Sheet Output Dictionary
         tech_metrics[stock_sym] = {
             "ADR %": round(adr_20, 2) if pd.notna(adr_20) else "",
             "RVOL (20D)": round(rvol_20, 2) if pd.notna(rvol_20) else "",
@@ -195,47 +189,39 @@ for ticker in tickers:
         # ==========================================
         # GENERATE FINVIZ-STYLE STATIC CHART
         # ==========================================
-        # Subset to last 65 trading days (~3 Months)
         df_chart = df.tail(65)
         
-        # Configure layout with explicit aspect sizing to save on image resolution weight
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(4, 2.5), gridspec_kw={'height_ratios': [3, 1]})
         fig.subplots_adjust(left=0.12, right=0.95, top=0.9, bottom=0.1, hspace=0.05)
         
-        # Plot Candles Manually (Saves memory over heavy financial plotting overhead)
         idx = np.arange(len(df_chart))
         up = df_chart['Close'] >= df_chart['Open']
         down = ~up
         
-        # Draw Wicks & Bodies
         ax1.vlines(idx[up], df_chart['Low'][up], df_chart['High'][up], color='#26a69a', linewidth=1)
         ax1.vlines(idx[down], df_chart['Low'][down], df_chart['High'][down], color='#ef5350', linewidth=1)
         ax1.bar(idx[up], df_chart['Close'][up] - df_chart['Open'][up], bottom=df_chart['Open'][up], color='#26a69a', width=0.6)
         ax1.bar(idx[down], df_chart['Open'][down] - df_chart['Close'][down], bottom=df_chart['Close'][down], color='#ef5350', width=0.6)
         
-        # Overlay Specific Custom Color Lines
+        # EMA COLORS AS REQUESTED
         ax1.plot(idx, df_chart['ema4'], color='#87CEFA', linewidth=0.8, label='4 EMA')
         ax1.plot(idx, df_chart['ema9'], color='#800080', linewidth=0.8, label='9 EMA')
         ax1.plot(idx, df_chart['ema21'], color='#CC9900', linewidth=0.8, label='21 EMA')
         ax1.plot(idx, df_chart['ema50'], color='#FF0000', linewidth=0.8, label='50 EMA')
         
-        # Title & Configuration Details
         ax1.set_title(f"{stock_sym}", color='white', fontsize=10, fontweight='bold', loc='left', pad=2)
         ax1.grid(True, alpha=0.2)
         ax1.set_xticklabels([])
         
-        # Render Volume Area Chart Matrix
         ax2.bar(idx[up], df_chart['Volume'][up], color='rgba(38, 166, 154, 0.4)', width=0.6)
         ax2.bar(idx[down], df_chart['Volume'][down], color='rgba(239, 83, 80, 0.4)', width=0.6)
         ax2.grid(True, alpha=0.2)
         ax2.set_yticklabels([])
         
-        # Map Dates carefully across the scale limits
         step = max(1, len(df_chart) // 3)
         ax2.set_xticks(idx[::step])
         ax2.set_xticklabels(df_chart.index.strftime('%b %d')[::step], rotation=0)
 
-        # Output out compressed binary file to the repository directory
         plt.savefig(f"charts/{stock_sym}.png", dpi=120, facecolor=fig.get_facecolor(), edgecolor='none')
         plt.close(fig)
 
@@ -243,8 +229,41 @@ for ticker in tickers:
         print(f"Error processing {stock_sym}: {e}")
         continue
 
+
 # ==========================================
-# 5. MERGE DATA & WRITE TO GOOGLE SHEET
+# 5. PUSH IMAGES TO PUBLIC GITHUB REPO
+# ==========================================
+print("\nPushing generated charts to public CDN repository...")
+GITHUB_USER = "abhinavbhuvns-creator"
+PUBLIC_REPO = "alpha-charts"
+GH_PAT = os.environ.get('GH_PAT')
+
+if GH_PAT:
+    try:
+        # Clone the public repository
+        repo_url = f"https://{GH_PAT}@github.com/{GITHUB_USER}/{PUBLIC_REPO}.git"
+        os.system(f"git clone {repo_url}")
+        
+        # Copy the charts over to the cloned directory
+        for file in os.listdir("charts"):
+            shutil.copy(os.path.join("charts", file), os.path.join(PUBLIC_REPO, file))
+            
+        # Commit and push
+        os.chdir(PUBLIC_REPO)
+        os.system("git config user.name 'github-actions[bot]'")
+        os.system("git config user.email 'github-actions[bot]@users.noreply.github.com'")
+        os.system("git add .")
+        os.system("git commit -m 'Auto-update daily static charts'")
+        os.system("git push")
+        os.chdir("..")
+        print("✅ Charts successfully synced to public CDN!")
+    except Exception as e:
+        print(f"⚠️ Error pushing charts: {e}")
+else:
+    print("⚠️ GH_PAT secret not found. Skipping chart push to public repo.")
+
+# ==========================================
+# 6. MERGE DATA & WRITE TO GOOGLE SHEET
 # ==========================================
 print("Updating Google Sheets Master Framework...")
 df_tech = pd.DataFrame.from_dict(tech_metrics, orient='index').reset_index()
@@ -263,7 +282,7 @@ target_ws.freeze(rows=1)
 target_ws.format('A1:Z1', {'textFormat': {'bold': True}, "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}})
 
 # ==========================================
-# 6. BUILD SYNTHETIC ETF CHARTS (GROWTH50)
+# 7. BUILD SYNTHETIC ETF CHARTS (GROWTH50)
 # ==========================================
 print("\nBuilding Synthetic Equal-Weight ETF for GROWTH50...")
 try:
