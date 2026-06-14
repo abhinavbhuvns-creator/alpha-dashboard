@@ -203,7 +203,6 @@ for ticker in tickers:
         ax1.bar(idx[up], df_chart['Close'][up] - df_chart['Open'][up], bottom=df_chart['Open'][up], color='#26a69a', width=0.6)
         ax1.bar(idx[down], df_chart['Open'][down] - df_chart['Close'][down], bottom=df_chart['Close'][down], color='#ef5350', width=0.6)
         
-        # EMA COLORS AS REQUESTED
         ax1.plot(idx, df_chart['ema4'], color='#87CEFA', linewidth=0.8, label='4 EMA')
         ax1.plot(idx, df_chart['ema9'], color='#800080', linewidth=0.8, label='9 EMA')
         ax1.plot(idx, df_chart['ema21'], color='#CC9900', linewidth=0.8, label='21 EMA')
@@ -213,8 +212,9 @@ for ticker in tickers:
         ax1.grid(True, alpha=0.2)
         ax1.set_xticklabels([])
         
-        ax2.bar(idx[up], df_chart['Volume'][up], color='rgba(38, 166, 154, 0.4)', width=0.6)
-        ax2.bar(idx[down], df_chart['Volume'][down], color='rgba(239, 83, 80, 0.4)', width=0.6)
+        # FIXED: Removed 'rgba' string and replaced with hex code + alpha parameter
+        ax2.bar(idx[up], df_chart['Volume'][up], color='#26a69a', alpha=0.4, width=0.6)
+        ax2.bar(idx[down], df_chart['Volume'][down], color='#ef5350', alpha=0.4, width=0.6)
         ax2.grid(True, alpha=0.2)
         ax2.set_yticklabels([])
         
@@ -240,15 +240,12 @@ GH_PAT = os.environ.get('GH_PAT')
 
 if GH_PAT:
     try:
-        # Clone the public repository
         repo_url = f"https://{GH_PAT}@github.com/{GITHUB_USER}/{PUBLIC_REPO}.git"
         os.system(f"git clone {repo_url}")
         
-        # Copy the charts over to the cloned directory
         for file in os.listdir("charts"):
             shutil.copy(os.path.join("charts", file), os.path.join(PUBLIC_REPO, file))
             
-        # Commit and push
         os.chdir(PUBLIC_REPO)
         os.system("git config user.name 'github-actions[bot]'")
         os.system("git config user.email 'github-actions[bot]@users.noreply.github.com'")
