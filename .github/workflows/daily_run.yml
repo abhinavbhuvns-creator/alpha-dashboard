@@ -22,11 +22,12 @@ jobs:
           python-version: '3.10'
 
       - name: Install required libraries
-        run: pip install yfinance gspread google-auth pandas numpy
+        run: pip install yfinance gspread google-auth pandas numpy matplotlib
 
       - name: 1. Run Daily Technicals (Both Morning and Afternoon)
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: python main.py
 
       - name: 2. Run ETF Database Engine (Both Morning and Afternoon)
