@@ -46,7 +46,6 @@ tickers = (df_master['Symbol'].str.strip() + '.NS').tolist()
 # ==========================================
 # 3. BATCH DOWNLOAD (2 YEARS OF DATA)
 # ==========================================
-# Bumped to 2y so Moving Averages have enough history to smooth out correctly
 print(f"Downloading 2 years of price history for {len(tickers)} stocks...")
 
 def chunker(seq, size):
@@ -79,11 +78,11 @@ for ticker in tickers:
             df = data[ticker].copy()
 
         df = df.dropna(subset=['Close'])
-        if len(df) < 60: continue # Ensure enough data for SMAs and EMAs
+        if len(df) < 60: continue 
 
         # --- Base Metrics ---
         close = df['Close'].iloc[-1]
-        high_52w = df['High'].tail(252).max() # Look only at the last year (252 trading days)
+        high_52w = df['High'].tail(252).max() 
         
         # --- ATR & ADR Math ---
         df['tr1'] = df['High'] - df['Low']
@@ -95,7 +94,13 @@ for ticker in tickers:
         daily_range = (df['High'] / df['Low']) - 1
         adr_20 = daily_range.rolling(window=20).mean().iloc[-1] * 100
 
+        # --- RVOL (20 Days) ---
+        avg_vol_20 = df['Volume'].rolling(window=20).mean().iloc[-1]
+        rvol_20 = (df['Volume'].iloc[-1] / avg_vol_20) if avg_vol_20 > 0 else np.nan
+
         # --- Moving Averages ---
+        ema_4 = df['Close'].ewm(span=4, adjust=False).mean().iloc[-1]
+        ema_6 = df['Close'].ewm(span=6, adjust=False).mean().iloc[-1]
         ema_9 = df['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
         ema_21 = df['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
         ema_50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
@@ -109,8 +114,10 @@ for ticker in tickers:
             wk_sma_10 = np.nan
 
         # --- ATR Distances ---
+        dist_4 = (close - ema_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+        dist_6 = (close - ema_6) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_9 = (close - ema_9) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
-        dist_21_atr = (close - ema_21) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+        dist_21 = (close - ema_21) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_50 = (close - ema_50) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
@@ -135,6 +142,7 @@ for ticker in tickers:
         # Build Output Dictionary
         tech_metrics[stock_sym] = {
             "ADR %": round(adr_20, 2) if pd.notna(adr_20) else "",
+            "RVOL (20D)": round(rvol_20, 2) if pd.notna(rvol_20) else "",
             "1 Day Return %": round(ret_1d, 2) if pd.notna(ret_1d) else "",
             "1 Week Return %": round(ret_1w, 2) if pd.notna(ret_1w) else "",
             "1 Month Return %": round(ret_1m, 2) if pd.notna(ret_1m) else "",
@@ -143,8 +151,19 @@ for ticker in tickers:
             "6 Month Return %": round(ret_6m, 2) if pd.notna(ret_6m) else "",
             "% Dist from 21 EMA": round(dist_ema21, 2) if pd.notna(dist_ema21) else "",
             "% Dist from 52W High": round(dist_high, 2) if pd.notna(dist_high) else "",
+            
+            # Raw EMA values for Query Builder sorting
+            "4 EMA": round(ema_4, 2) if pd.notna(ema_4) else "",
+            "6 EMA": round(ema_6, 2) if pd.notna(ema_6) else "",
+            "9 EMA": round(ema_9, 2) if pd.notna(ema_9) else "",
+            "21 EMA": round(ema_21, 2) if pd.notna(ema_21) else "",
+            "50 EMA": round(ema_50, 2) if pd.notna(ema_50) else "",
+
+            # ATR Distances
+            "4 EMA (ATR)": round(dist_4, 2) if pd.notna(dist_4) else "",
+            "6 EMA (ATR)": round(dist_6, 2) if pd.notna(dist_6) else "",
             "9 EMA (ATR)": round(dist_9, 2) if pd.notna(dist_9) else "",
-            "21 EMA (ATR)": round(dist_21_atr, 2) if pd.notna(dist_21_atr) else "",
+            "21 EMA (ATR)": round(dist_21, 2) if pd.notna(dist_21) else "",
             "50 EMA (ATR)": round(dist_50, 2) if pd.notna(dist_50) else "",
             "4W SMA (ATR)": round(dist_w4, 2) if pd.notna(dist_w4) else "",
             "10W SMA (ATR)": round(dist_w10, 2) if pd.notna(dist_w10) else ""
@@ -165,7 +184,7 @@ try:
     target_ws = spreadsheet.worksheet(TARGET_TAB_NAME)
     target_ws.clear()
 except gspread.exceptions.WorksheetNotFound:
-    target_ws = spreadsheet.add_worksheet(title=TARGET_TAB_NAME, rows="2500", cols="25")
+    target_ws = spreadsheet.add_worksheet(title=TARGET_TAB_NAME, rows="2500", cols="35")
 
 sheet_output = [df_final.columns.values.tolist()] + df_final.values.tolist()
 target_ws.update(values=sheet_output, range_name='A1', value_input_option='USER_ENTERED')
