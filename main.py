@@ -321,7 +321,6 @@ try:
     up_counts = (close_df > prev_close).sum(axis=1)
     down_counts = (close_df < prev_close).sum(axis=1)
     
-    # 5-Day Ratio
     rolling_up_5 = up_counts.rolling(5).sum()
     rolling_down_5 = down_counts.rolling(5).sum()
     ratio_5d = round(rolling_up_5 / rolling_down_5.replace(0, np.nan), 2)
@@ -338,7 +337,6 @@ try:
     new_highs = (high_df >= high252).sum(axis=1)
     new_lows = (low_df <= low252).sum(axis=1)
 
-    # Replicate Scanners for Breadth
     avg_vol_50 = vol_df.rolling(50).mean()
     up_on_vol = ((close_df.pct_change() >= 0.045) & (vol_df > 2 * avg_vol_50) & (close_df > 40)).sum(axis=1)
     
@@ -424,6 +422,37 @@ try:
                 df_index['21 EMA'] = round(df_index['Close'].ewm(span=21, adjust=False).mean(), 2)
                 df_index['50 EMA'] = round(df_index['Close'].ewm(span=50, adjust=False).mean(), 2)
                 
+                # --- NEW: STATIC IMAGE FALLBACK FOR GROWTH50 ---
+                df_idx_chart = df_index.tail(65).copy()
+                fig, ax1 = plt.subplots(1, 1, figsize=(4, 2.5))
+                fig.subplots_adjust(left=0.12, right=0.95, top=0.9, bottom=0.15)
+                
+                idx = np.arange(len(df_idx_chart))
+                up = df_idx_chart['Close'] >= df_idx_chart['Open']
+                down = ~up
+                
+                ax1.vlines(idx[up], df_idx_chart['Low'][up], df_idx_chart['High'][up], color='#26a69a', linewidth=1)
+                ax1.vlines(idx[down], df_idx_chart['Low'][down], df_idx_chart['High'][down], color='#ef5350', linewidth=1)
+                ax1.bar(idx[up], df_idx_chart['Close'][up] - df_idx_chart['Open'][up], bottom=df_idx_chart['Open'][up], color='#26a69a', width=0.6)
+                ax1.bar(idx[down], df_idx_chart['Open'][down] - df_idx_chart['Close'][down], bottom=df_idx_chart['Close'][down], color='#ef5350', width=0.6)
+                
+                ax1.plot(idx, df_idx_chart['9 EMA'], color='#87CEFA', linewidth=0.8, label='9 EMA')
+                ax1.plot(idx, df_idx_chart['21 EMA'], color='#26a69a', linewidth=0.8, label='21 EMA')
+                ax1.plot(idx, df_idx_chart['50 EMA'], color='#f5b041', linewidth=0.8, label='50 EMA')
+                
+                ax1.set_title("GROWTH50 Index", color='white', fontsize=10, fontweight='bold', loc='left', pad=2)
+                ax1.grid(True, alpha=0.2)
+                
+                step = max(1, len(df_idx_chart) // 3)
+                ax1.set_xticks(idx[::step])
+                
+                df_idx_chart.reset_index(drop=True, inplace=True)
+                ax1.set_xticklabels(pd.to_datetime(df_idx_chart['Date']).dt.strftime('%b %d')[::step], rotation=0)
+
+                plt.savefig(f"charts/Chart_GROWTH50.png", dpi=120, facecolor=fig.get_facecolor(), edgecolor='none')
+                plt.close(fig)
+                # -----------------------------------------------
+
                 df_index.reset_index(inplace=True)
                 df_index['Date'] = df_index['Date'].dt.strftime('%Y-%m-%d')
                 
