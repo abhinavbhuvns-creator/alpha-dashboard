@@ -97,7 +97,16 @@ for ticker in tickers:
         if len(df) < 60: continue 
 
         close = df['Close'].iloc[-1]
+        
+        # --- NEW BREADTH METRICS ADDED HERE ---
         high_52w = df['High'].tail(252).max() 
+        low_52w = df['Low'].tail(252).min()
+        sma200 = df['Close'].rolling(window=200).mean().iloc[-1]
+        
+        # Flag if today's High/Low is the 52-Week Extreme
+        is_new_high = "Yes" if df['High'].iloc[-1] >= high_52w else "No"
+        is_new_low = "Yes" if df['Low'].iloc[-1] <= low_52w else "No"
+        # --------------------------------------
         
         df['tr1'] = df['High'] - df['Low']
         df['tr2'] = abs(df['High'] - df['Close'].shift(1))
@@ -177,6 +186,13 @@ for ticker in tickers:
             "9 EMA": round(df['ema9'].iloc[-1], 2) if pd.notna(df['ema9'].iloc[-1]) else "",
             "21 EMA": round(df['ema21'].iloc[-1], 2) if pd.notna(df['ema21'].iloc[-1]) else "",
             "50 EMA": round(df['ema50'].iloc[-1], 2) if pd.notna(df['ema50'].iloc[-1]) else "",
+            
+            # --- NEW METRICS ADDED TO SHEET OUTPUT ---
+            "200 SMA": round(sma200, 2) if pd.notna(sma200) else "",
+            "New High": is_new_high,
+            "New Low": is_new_low,
+            # -----------------------------------------
+            
             "4 EMA (ATR)": round(dist_4, 2) if pd.notna(dist_4) else "",
             "6 EMA (ATR)": round(dist_6, 2) if pd.notna(dist_6) else "",
             "9 EMA (ATR)": round(dist_9, 2) if pd.notna(dist_9) else "",
@@ -212,7 +228,6 @@ for ticker in tickers:
         ax1.grid(True, alpha=0.2)
         ax1.set_xticklabels([])
         
-        # FIXED: Removed 'rgba' string and replaced with hex code + alpha parameter
         ax2.bar(idx[up], df_chart['Volume'][up], color='#26a69a', alpha=0.4, width=0.6)
         ax2.bar(idx[down], df_chart['Volume'][down], color='#ef5350', alpha=0.4, width=0.6)
         ax2.grid(True, alpha=0.2)
@@ -228,7 +243,6 @@ for ticker in tickers:
     except Exception as e:
         print(f"Error processing {stock_sym}: {e}")
         continue
-
 
 # ==========================================
 # 5. PUSH IMAGES TO PUBLIC GITHUB REPO
