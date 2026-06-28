@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 warnings.simplefilter(action='ignore')
 pd.options.mode.chained_assignment = None
 
-# Create local charts directory if it doesn't exist
 os.makedirs('charts', exist_ok=True)
 
 # ==========================================
@@ -73,16 +72,11 @@ data = pd.concat(all_chunks, axis=1)
 print("Generating Sheet Analytics & Custom Visual Chart PNGs...")
 tech_metrics = {}
 
-# Configure Matplotlib for seamless dark-mode plotting
 plt.style.use('dark_background')
 plt.rcParams.update({
-    'figure.facecolor': '#131722',
-    'axes.facecolor': '#131722',
-    'axes.edgecolor': '#2a2e39',
-    'grid.color': '#2a2e39',
-    'xtick.color': '#8a93a6',
-    'ytick.color': '#8a93a6',
-    'font.size': 8
+    'figure.facecolor': '#131722', 'axes.facecolor': '#131722',
+    'axes.edgecolor': '#2a2e39', 'grid.color': '#2a2e39',
+    'xtick.color': '#8a93a6', 'ytick.color': '#8a93a6', 'font.size': 8
 })
 
 for ticker in tickers:
@@ -97,14 +91,7 @@ for ticker in tickers:
         if len(df) < 60: continue 
 
         close = df['Close'].iloc[-1]
-        
-        # --- NEW BREADTH & SMA200 CALCULATIONS ---
         high_52w = df['High'].tail(252).max() 
-        low_52w = df['Low'].tail(252).min()
-        
-        is_new_high = "Yes" if df['High'].iloc[-1] >= high_52w else "No"
-        is_new_low = "Yes" if df['Low'].iloc[-1] <= low_52w else "No"
-        # -----------------------------------------
         
         df['tr1'] = df['High'] - df['Low']
         df['tr2'] = abs(df['High'] - df['Close'].shift(1))
@@ -129,7 +116,6 @@ for ticker in tickers:
         df['ema9'] = df['Close'].ewm(span=9, adjust=False).mean()
         df['ema21'] = df['Close'].ewm(span=21, adjust=False).mean()
         df['ema50'] = df['Close'].ewm(span=50, adjust=False).mean()
-        df['sma200'] = df['Close'].rolling(window=200).mean() # NEW 200 SMA
         
         weekly_df = df.resample('W-FRI').agg({'Close': 'last', 'Volume': 'sum'}).dropna()
         if len(weekly_df) >= 10:
@@ -149,7 +135,6 @@ for ticker in tickers:
         dist_9 = (close - df['ema9'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_21 = (close - df['ema21'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_50 = (close - df['ema50'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
-        dist_200 = (close - df['sma200'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan # NEW
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
 
@@ -186,14 +171,6 @@ for ticker in tickers:
             "9 EMA": round(df['ema9'].iloc[-1], 2) if pd.notna(df['ema9'].iloc[-1]) else "",
             "21 EMA": round(df['ema21'].iloc[-1], 2) if pd.notna(df['ema21'].iloc[-1]) else "",
             "50 EMA": round(df['ema50'].iloc[-1], 2) if pd.notna(df['ema50'].iloc[-1]) else "",
-            
-            # --- NEW METRICS INTEGRATED ---
-            "200 SMA": round(df['sma200'].iloc[-1], 2) if pd.notna(df['sma200'].iloc[-1]) else "",
-            "200 SMA (ATR)": round(dist_200, 2) if pd.notna(dist_200) else "",
-            "New High": is_new_high,
-            "New Low": is_new_low,
-            # ------------------------------
-            
             "4 EMA (ATR)": round(dist_4, 2) if pd.notna(dist_4) else "",
             "6 EMA (ATR)": round(dist_6, 2) if pd.notna(dist_6) else "",
             "9 EMA (ATR)": round(dist_9, 2) if pd.notna(dist_9) else "",
@@ -203,11 +180,8 @@ for ticker in tickers:
             "10W SMA (ATR)": round(dist_w10, 2) if pd.notna(dist_w10) else ""
         }
 
-        # ==========================================
-        # GENERATE FINVIZ-STYLE STATIC CHART
-        # ==========================================
+        # STATIC CHART GEN
         df_chart = df.tail(65)
-        
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(4, 2.5), gridspec_kw={'height_ratios': [3, 1]})
         fig.subplots_adjust(left=0.12, right=0.95, top=0.9, bottom=0.1, hspace=0.05)
         
@@ -244,6 +218,46 @@ for ticker in tickers:
     except Exception as e:
         print(f"Error processing {stock_sym}: {e}")
         continue
+
+# ==========================================
+# 4.5 GENERATE INDEX CHARTS FOR BREADTH VIEW
+# ==========================================
+print("\nGenerating Nifty 50 and Smallcap Index Charts...")
+try:
+    idx_data = yf.download(['^NSEI', '^CRSLDX'], period="1y", group_by="ticker", progress=False)
+    for idx_sym, file_name in [('^NSEI', 'NIFTY50'), ('^CRSLDX', 'SMALLCAP250')]:
+        if idx_sym in idx_data.columns.levels[0]:
+            df_idx = idx_data[idx_sym].dropna(subset=['Close']).tail(65)
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(4, 2.5), gridspec_kw={'height_ratios': [3, 1]})
+            fig.subplots_adjust(left=0.12, right=0.95, top=0.9, bottom=0.1, hspace=0.05)
+            
+            idx = np.arange(len(df_idx))
+            up = df_idx['Close'] >= df_idx['Open']
+            down = ~up
+            
+            ax1.vlines(idx[up], df_idx['Low'][up], df_idx['High'][up], color='#26a69a', linewidth=1)
+            ax1.vlines(idx[down], df_idx['Low'][down], df_idx['High'][down], color='#ef5350', linewidth=1)
+            ax1.bar(idx[up], df_idx['Close'][up] - df_idx['Open'][up], bottom=df_idx['Open'][up], color='#26a69a', width=0.6)
+            ax1.bar(idx[down], df_idx['Open'][down] - df_idx['Close'][down], bottom=df_idx['Close'][down], color='#ef5350', width=0.6)
+            
+            ax1.set_title(file_name, color='white', fontsize=10, fontweight='bold', loc='left', pad=2)
+            ax1.grid(True, alpha=0.2)
+            ax1.set_xticklabels([])
+            
+            if 'Volume' in df_idx.columns and df_idx['Volume'].sum() > 0:
+                ax2.bar(idx[up], df_idx['Volume'][up], color='#26a69a', alpha=0.4, width=0.6)
+                ax2.bar(idx[down], df_idx['Volume'][down], color='#ef5350', alpha=0.4, width=0.6)
+            ax2.grid(True, alpha=0.2)
+            ax2.set_yticklabels([])
+            
+            step = max(1, len(df_idx) // 3)
+            ax2.set_xticks(idx[::step])
+            ax2.set_xticklabels(df_idx.index.strftime('%b %d')[::step], rotation=0)
+
+            plt.savefig(f"charts/{file_name}.png", dpi=120, facecolor=fig.get_facecolor(), edgecolor='none')
+            plt.close(fig)
+except Exception as e:
+    print(f"Error generating index charts: {e}")
 
 # ==========================================
 # 5. PUSH IMAGES TO PUBLIC GITHUB REPO
@@ -294,89 +308,77 @@ target_ws.freeze(rows=1)
 target_ws.format('A1:Z1', {'textFormat': {'bold': True}, "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}})
 
 # ==========================================
-# 7. CALCULATE & APPEND TODAY'S MARKET BREADTH
+# 7. CALCULATE 6-MONTH MARKET BREADTH
 # ==========================================
-print("\nCalculating and appending today's Market Breadth...")
+print("\nCalculating 6-Month Market Breadth History...")
 try:
-    close_df = pd.DataFrame()
-    high_df = pd.DataFrame()
-    low_df = pd.DataFrame()
+    close_df = pd.DataFrame({t: data[t]['Close'] for t in tickers if t in data.columns.levels[0]})
+    vol_df = pd.DataFrame({t: data[t]['Volume'] for t in tickers if t in data.columns.levels[0]})
+    high_df = pd.DataFrame({t: data[t]['High'] for t in tickers if t in data.columns.levels[0]})
+    low_df = pd.DataFrame({t: data[t]['Low'] for t in tickers if t in data.columns.levels[0]})
 
-    if len(tickers) == 1:
-        t = tickers[0]
-        close_df[t] = data['Close']
-        high_df[t] = data['High']
-        low_df[t] = data['Low']
-    else:
-        for t in tickers:
-            if t in data.columns.levels[0]:
-                close_df[t] = data[t]['Close']
-                high_df[t] = data[t]['High']
-                low_df[t] = data[t]['Low']
+    prev_close = close_df.shift(1)
+    up_counts = (close_df > prev_close).sum(axis=1)
+    down_counts = (close_df < prev_close).sum(axis=1)
+    
+    # 5-Day Ratio
+    rolling_up_5 = up_counts.rolling(5).sum()
+    rolling_down_5 = down_counts.rolling(5).sum()
+    ratio_5d = round(rolling_up_5 / rolling_down_5.replace(0, np.nan), 2)
 
-    prev_close = close_df.shift(1).iloc[-1]
-    curr_close = close_df.iloc[-1]
-    
-    up_count = (curr_close > prev_close).sum()
-    down_count = (curr_close < prev_close).sum()
-    flat_count = (curr_close == prev_close).sum()
-    
-    sma50 = close_df.rolling(window=50).mean().iloc[-1]
-    sma200 = close_df.rolling(window=200).mean().iloc[-1]
-    
-    above_50 = (curr_close > sma50).sum()
-    below_50 = (curr_close < sma50).sum()
-    
-    above_200 = (curr_close > sma200).sum()
-    below_200 = (curr_close < sma200).sum()
-    
-    high252 = high_df.rolling(window=252).max().iloc[-1]
-    low252 = low_df.rolling(window=252).min().iloc[-1]
-    
-    new_highs = (high_df.iloc[-1] >= high252).sum()
-    new_lows = (low_df.iloc[-1] <= low252).sum()
-    
-    valid_stocks = curr_close.notna().sum()
-    valid_sma50_count = sma50.notna().sum()
-    valid_sma200_count = sma200.notna().sum()
-    
-    at_50 = valid_sma50_count - above_50 - below_50
-    at_200 = valid_sma200_count - above_200 - below_200
-    total_extremes = new_highs + new_lows
+    sma50 = close_df.rolling(50).mean()
+    sma200 = close_df.rolling(200).mean()
+    above_50 = (close_df > sma50).sum(axis=1)
+    below_50 = (close_df < sma50).sum(axis=1)
+    above_200 = (close_df > sma200).sum(axis=1)
+    below_200 = (close_df < sma200).sum(axis=1)
 
-    def fmt(count, total):
-        if total == 0 or pd.isna(total): return "0% (0)"
-        pct = round((count / total) * 100, 2)
-        return f"{pct}% ({int(count)})"
+    high252 = high_df.rolling(252).max()
+    low252 = low_df.rolling(252).min()
+    new_highs = (high_df >= high252).sum(axis=1)
+    new_lows = (low_df <= low252).sum(axis=1)
 
-    today_date = close_df.index[-1].strftime('%Y-%m-%d')
+    # Replicate Scanners for Breadth
+    avg_vol_50 = vol_df.rolling(50).mean()
+    up_on_vol = ((close_df.pct_change() >= 0.045) & (vol_df > 2 * avg_vol_50) & (close_df > 40)).sum(axis=1)
     
-    breadth_row = [
-        today_date,
-        fmt(up_count, valid_stocks), fmt(down_count, valid_stocks), fmt(flat_count, valid_stocks),
-        fmt(above_50, valid_sma50_count), fmt(below_50, valid_sma50_count), fmt(at_50, valid_sma50_count),
-        fmt(above_200, valid_sma200_count), fmt(below_200, valid_sma200_count), fmt(at_200, valid_sma200_count),
-        fmt(new_highs, total_extremes), fmt(new_lows, total_extremes)
-    ]
+    prev_max_252 = prev_close.rolling(252).max()
+    high_52w_scan = ((close_df > prev_max_252) & (close_df > 40)).sum(axis=1)
+
+    ema21 = close_df.ewm(span=21, adjust=False).mean()
+    ema50_df = close_df.ewm(span=50, adjust=False).mean()
+    ema150 = close_df.ewm(span=150, adjust=False).mean()
+    wl_one_day = ((ema21 > ema50_df) & (ema50_df > ema150) & (close_df > ema50_df) & (close_df > 40)).sum(axis=1)
+
+    breadth_df = pd.DataFrame({
+        'Date': close_df.index.strftime('%Y-%m-%d'),
+        'Stock Up': up_counts,
+        'Stock Down': down_counts,
+        '5 Day Ratio': ratio_5d,
+        'New High': new_highs,
+        'New Low': new_lows,
+        'Above 50 SMA': above_50,
+        'Below 50 SMA': below_50,
+        'Above 200 SMA': above_200,
+        'Below 200 SMA': below_200,
+        'Up on Volume': up_on_vol,
+        '52 Week High': high_52w_scan,
+        'Watchlist One Day': wl_one_day
+    }).dropna().tail(130) # Extract exactly 6 Months
 
     breadth_tab = "Market_Breadth_History"
     try:
         breadth_ws = spreadsheet.worksheet(breadth_tab)
+        breadth_ws.clear()
     except gspread.exceptions.WorksheetNotFound:
-        breadth_ws = spreadsheet.add_worksheet(title=breadth_tab, rows="1000", cols="15")
-        headers = ['Date', '% Up', '% Down', '% Flat', '% Above 50 SMA', '% Below 50 SMA', '% At 50 SMA', '% Above 200 SMA', '% Below 200 SMA', '% At 200 SMA', '% New High', '% New Low']
-        breadth_ws.append_row(headers)
-
-    existing_dates = breadth_ws.col_values(1)
-    if today_date in existing_dates:
-        row_idx = existing_dates.index(today_date) + 1
-        breadth_ws.update(f"A{row_idx}:L{row_idx}", [breadth_row])
-        print(f" -> Updated Breadth for {today_date}")
-    else:
-        breadth_ws.append_row(breadth_row)
-        print(f" -> Appended Breadth for {today_date}")
+        breadth_ws = spreadsheet.add_worksheet(title=breadth_tab, rows="200", cols="15")
+    
+    breadth_out = [breadth_df.columns.values.tolist()] + breadth_df.values.tolist()
+    breadth_ws.update(values=breadth_out, range_name='A1', value_input_option='USER_ENTERED')
+    breadth_ws.format('A1:M1', {'textFormat': {'bold': True}, "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}})
+    print(" -> Successfully overwrote 6-month breadth history.")
 except Exception as e:
-    print(f" -> Could not append market breadth: {e}")
+    print(f" -> Could not calculate market breadth: {e}")
 
 # ==========================================
 # 8. BUILD SYNTHETIC ETF CHARTS (GROWTH50)
