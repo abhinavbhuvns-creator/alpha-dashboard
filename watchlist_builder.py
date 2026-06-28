@@ -9,7 +9,9 @@ import gspread
 import requests
 from google.oauth2.service_account import Credentials
 
+# Silence performance and date parsing warnings
 warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
+warnings.filterwarnings('ignore', message='.*Parsing dates.*')
 pd.options.mode.chained_assignment = None
 
 # ==========================================
@@ -99,7 +101,7 @@ for scan in scanners:
 
     for row in data[1:]:
         if len(row) >= 2 and row[0] != "Trigger Date":
-            try: all_dates.append(pd.to_datetime(row[0].strip(), dayfirst=True).normalize()) 
+            try: all_dates.append(pd.to_datetime(row[0].strip(), format='mixed', dayfirst=True).normalize()) 
             except: pass
 
 latest_trading_date = max(all_dates) if all_dates else pd.Timestamp.today().normalize()
@@ -125,7 +127,7 @@ for scan, data in raw_scanner_data.items():
             oneday_tracker[stock][scan] = "Yes"
             continue
 
-        try: trigger_date = pd.to_datetime(row[0].strip(), dayfirst=True).normalize() 
+        try: trigger_date = pd.to_datetime(row[0].strip(), format='mixed', dayfirst=True).normalize() 
         except: continue
 
         if trigger_date >= cutoff_date_univ:
@@ -220,8 +222,6 @@ for stock in all_unique_stocks:
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
 
         rupee_vol = df['Close'] * df['Volume']
-        
-        # THE FIX: Divide by 10,000,000 to convert raw numbers to Crores
         avg_rupee_vol_20 = (rupee_vol.rolling(window=20).mean().iloc[-1]) / 10000000
 
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
@@ -250,7 +250,6 @@ for stock in all_unique_stocks:
 # ==========================================
 # 5. BUILD THE THREE LISTS
 # ==========================================
-# THE FIX: Updated Header to Match Master Scanner
 headers = [
     "Stock Symbol", "Ind Rank", "Industry Group", "ADR %", "Avg Rupee Vol (Cr)",
     "1 Day Return %", "1 Week Return %", "1 Month Return %", "Prev 2M Return (Ending 1M Ago) %",
@@ -265,7 +264,6 @@ def format_row(stock, scan_dict):
     ind_key = ind.lower() if isinstance(ind, str) else ""
     current_rank = industry_rank_map.get(ind_key, "N/A")
 
-    # THE FIX: Round Volume to 2 decimal places
     row = [
         stock, current_rank, ind, round(td['adr'], 2), round(td['vol'], 2),
         round(td['ret_1d'], 2), round(td['ret_1w'], 2), round(td['ret_1m'], 2),
@@ -305,6 +303,14 @@ for stock, scans in oneday_tracker.items():
 # ==========================================
 # 6. EXPORT TO GOOGLE SHEETS
 # ==========================================
+def get_column_letter(col_idx):
+    """Convert 1-based column index to Excel-style letter (1->A, 27->AA)"""
+    col_str = ""
+    while col_idx > 0:
+        col_idx, remainder = divmod(col_idx - 1, 26)
+        col_str = chr(65 + remainder) + col_str
+    return col_str
+
 def write_to_sheet(tab_name, data):
     print(f"Writing to '{tab_name}'...")
     try:
@@ -314,7 +320,9 @@ def write_to_sheet(tab_name, data):
         ws = target_ss.add_worksheet(title=tab_name, rows="1000", cols="30")
 
     if len(data) > 1:
-        col_letter = chr(ord('A') + len(headers) - 1)
+        # THE FIX: Dynamically handle any number of columns (A through ZZ+)
+        col_letter = get_column_letter(len(headers))
+        
         ws.update(values=data, range_name='A1', value_input_option='USER_ENTERED')
         ws.freeze(rows=1)
         ws.format(f'A1:{col_letter}1', {
