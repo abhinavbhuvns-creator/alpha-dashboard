@@ -67,6 +67,16 @@ for i, chunk in enumerate(ticker_chunks):
 data = pd.concat(all_chunks, axis=1)
 
 # ==========================================
+# 3.5 FIX LIVE MARKET FRAGMENTATION
+# ==========================================
+# 🟢 THE FIX: If downloading during market hours, chunks have different timestamps.
+# This normalizes all times to exactly midnight, pushes data forward, and squashes duplicate rows.
+if not data.empty:
+    data.index = pd.to_datetime(data.index).normalize()
+    data = data.ffill() 
+    data = data[~data.index.duplicated(keep='last')]
+
+# ==========================================
 # 4. TECH METRICS & CHART GENERATION
 # ==========================================
 print("Generating Sheet Analytics & Custom Visual Chart PNGs...")
@@ -106,6 +116,7 @@ for ticker in tickers:
 
         is_down_day = df['Close'] < df['Close'].shift(1)
         daily_down_vols = df['Volume'].where(is_down_day, 0)
+    
         max_down_vol_10d = daily_down_vols.shift(1).rolling(10).max()
         is_up_day = df['Close'] > df['Close'].shift(1)
         daily_pp = is_up_day & (df['Volume'] > max_down_vol_10d)
@@ -116,7 +127,7 @@ for ticker in tickers:
         df['ema9'] = df['Close'].ewm(span=9, adjust=False).mean()
         df['ema21'] = df['Close'].ewm(span=21, adjust=False).mean()
         df['ema50'] = df['Close'].ewm(span=50, adjust=False).mean()
-        
+   
         weekly_df = df.resample('W-FRI').agg({'Close': 'last', 'Volume': 'sum'}).dropna()
         if len(weekly_df) >= 10:
             wk_sma_4 = weekly_df['Close'].rolling(4).mean().iloc[-1]
@@ -134,6 +145,7 @@ for ticker in tickers:
         dist_6 = (close - df['ema6'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_9 = (close - df['ema9'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_21 = (close - df['ema21'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+       
         dist_50 = (close - df['ema50'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
@@ -202,7 +214,7 @@ for ticker in tickers:
         ax1.set_title(f"{stock_sym}", color='white', fontsize=10, fontweight='bold', loc='left', pad=2)
         ax1.grid(True, alpha=0.2)
         ax1.set_xticklabels([])
-        
+ 
         ax2.bar(idx[up], df_chart['Volume'][up], color='#26a69a', alpha=0.4, width=0.6)
         ax2.bar(idx[down], df_chart['Volume'][down], color='#ef5350', alpha=0.4, width=0.6)
         ax2.grid(True, alpha=0.2)
@@ -228,6 +240,7 @@ try:
     for idx_sym, file_name in [('^NSEI', 'NIFTY50'), ('^CRSLDX', 'SMALLCAP250')]:
         if idx_sym in idx_data.columns.levels[0]:
             df_idx = idx_data[idx_sym].dropna(subset=['Close']).tail(65)
+       
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(4, 2.5), gridspec_kw={'height_ratios': [3, 1]})
             fig.subplots_adjust(left=0.12, right=0.95, top=0.9, bottom=0.1, hspace=0.05)
             
@@ -241,12 +254,14 @@ try:
             ax1.bar(idx[down], df_idx['Open'][down] - df_idx['Close'][down], bottom=df_idx['Close'][down], color='#ef5350', width=0.6)
             
             ax1.set_title(file_name, color='white', fontsize=10, fontweight='bold', loc='left', pad=2)
+    
             ax1.grid(True, alpha=0.2)
             ax1.set_xticklabels([])
             
             if 'Volume' in df_idx.columns and df_idx['Volume'].sum() > 0:
                 ax2.bar(idx[up], df_idx['Volume'][up], color='#26a69a', alpha=0.4, width=0.6)
                 ax2.bar(idx[down], df_idx['Volume'][down], color='#ef5350', alpha=0.4, width=0.6)
+        
             ax2.grid(True, alpha=0.2)
             ax2.set_yticklabels([])
             
@@ -274,7 +289,7 @@ if GH_PAT:
         
         for file in os.listdir("charts"):
             shutil.copy(os.path.join("charts", file), os.path.join(PUBLIC_REPO, file))
-            
+          
         os.chdir(PUBLIC_REPO)
         os.system("git config user.name 'github-actions[bot]'")
         os.system("git config user.email 'github-actions[bot]@users.noreply.github.com'")
@@ -312,10 +327,11 @@ target_ws.format('A1:Z1', {'textFormat': {'bold': True}, "backgroundColor": {"re
 # ==========================================
 print("\nCalculating 6-Month Market Breadth History...")
 try:
-    close_df = pd.DataFrame({t: data[t]['Close'] for t in tickers if t in data.columns.levels[0]})
-    vol_df = pd.DataFrame({t: data[t]['Volume'] for t in tickers if t in data.columns.levels[0]})
-    high_df = pd.DataFrame({t: data[t]['High'] for t in tickers if t in data.columns.levels[0]})
-    low_df = pd.DataFrame({t: data[t]['Low'] for t in tickers if t in data.columns.levels[0]})
+    # 🟢 THE FIX: Added .ffill() to guarantee incomplete daily data carries forward perfectly!
+    close_df = pd.DataFrame({t: data[t]['Close'] for t in tickers if t in data.columns.levels[0]}).ffill()
+    vol_df = pd.DataFrame({t: data[t]['Volume'] for t in tickers if t in data.columns.levels[0]}).ffill().fillna(0)
+    high_df = pd.DataFrame({t: data[t]['High'] for t in tickers if t in data.columns.levels[0]}).ffill()
+    low_df = pd.DataFrame({t: data[t]['Low'] for t in tickers if t in data.columns.levels[0]}).ffill()
 
     prev_close = close_df.shift(1)
     up_counts = (close_df > prev_close).sum(axis=1)
