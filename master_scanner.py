@@ -68,15 +68,16 @@ for i, chunk in enumerate(ticker_chunks):
 
 data = pd.concat(all_chunks, axis=1)
 
-# 🟢 SQUASH TIMESTAMPS: Align all chunks to midnight so vectorization works perfectly.
+# 🟢 FIX 1: SQUASH TIMESTAMPS: Align all chunks to midnight so vectorization works perfectly.
 if not data.empty:
     data.index = pd.to_datetime(data.index).normalize()
     data = data.groupby(data.index).max()
 
-close_df = pd.DataFrame({t: data[t]['Close'] for t in tickers if t in data.columns.levels[0]})
-vol_df = pd.DataFrame({t: data[t]['Volume'] for t in tickers if t in data.columns.levels[0]})
-low_df = pd.DataFrame({t: data[t]['Low'] for t in tickers if t in data.columns.levels[0]})
-high_df = pd.DataFrame({t: data[t]['High'] for t in tickers if t in data.columns.levels[0]})
+# 🟢 FIX 2: THE "DATA HOLE" SHIELD (Forward Fill Prices, Zero Fill Volume)
+close_df = pd.DataFrame({t: data[t]['Close'] for t in tickers if t in data.columns.levels[0]}).ffill()
+vol_df = pd.DataFrame({t: data[t]['Volume'] for t in tickers if t in data.columns.levels[0]}).fillna(0)
+low_df = pd.DataFrame({t: data[t]['Low'] for t in tickers if t in data.columns.levels[0]}).ffill()
+high_df = pd.DataFrame({t: data[t]['High'] for t in tickers if t in data.columns.levels[0]}).ffill()
 
 close_df.index = close_df.index.tz_localize(None)
 vol_df.index = vol_df.index.tz_localize(None)
