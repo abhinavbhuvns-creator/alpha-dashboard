@@ -67,16 +67,6 @@ for i, chunk in enumerate(ticker_chunks):
 data = pd.concat(all_chunks, axis=1)
 
 # ==========================================
-# 3.5 FIX LIVE MARKET FRAGMENTATION
-# ==========================================
-# 🟢 THE FIX: If downloading during market hours, chunks have different timestamps.
-# This normalizes all times to exactly midnight, pushes data forward, and squashes duplicate rows.
-if not data.empty:
-    data.index = pd.to_datetime(data.index).normalize()
-    data = data.ffill() 
-    data = data[~data.index.duplicated(keep='last')]
-
-# ==========================================
 # 4. TECH METRICS & CHART GENERATION
 # ==========================================
 print("Generating Sheet Analytics & Custom Visual Chart PNGs...")
@@ -327,11 +317,10 @@ target_ws.format('A1:Z1', {'textFormat': {'bold': True}, "backgroundColor": {"re
 # ==========================================
 print("\nCalculating 6-Month Market Breadth History...")
 try:
-    # 🟢 THE FIX: Added .ffill() to guarantee incomplete daily data carries forward perfectly!
-    close_df = pd.DataFrame({t: data[t]['Close'] for t in tickers if t in data.columns.levels[0]}).ffill()
-    vol_df = pd.DataFrame({t: data[t]['Volume'] for t in tickers if t in data.columns.levels[0]}).ffill().fillna(0)
-    high_df = pd.DataFrame({t: data[t]['High'] for t in tickers if t in data.columns.levels[0]}).ffill()
-    low_df = pd.DataFrame({t: data[t]['Low'] for t in tickers if t in data.columns.levels[0]}).ffill()
+    close_df = pd.DataFrame({t: data[t]['Close'] for t in tickers if t in data.columns.levels[0]})
+    vol_df = pd.DataFrame({t: data[t]['Volume'] for t in tickers if t in data.columns.levels[0]})
+    high_df = pd.DataFrame({t: data[t]['High'] for t in tickers if t in data.columns.levels[0]})
+    low_df = pd.DataFrame({t: data[t]['Low'] for t in tickers if t in data.columns.levels[0]})
 
     prev_close = close_df.shift(1)
     up_counts = (close_df > prev_close).sum(axis=1)
