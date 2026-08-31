@@ -29,7 +29,7 @@ creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(creds)
 
 # ==========================================
-# 2. READ UNIFIED MASTER SHEET
+# 2. READ UNIFIED MASTER SHEET & MARKETSMITH
 # ==========================================
 SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
 spreadsheet = gc.open_by_url(SINGLE_SHEET_URL)
@@ -37,12 +37,38 @@ spreadsheet = gc.open_by_url(SINGLE_SHEET_URL)
 MASTER_TAB_NAME = "Avg_Rupee_Volume_Master"
 TARGET_TAB_NAME = "Daily_Technicals"
 
+MS_COLS = [
+    "EPS_Rating", "RS_Rating", "AD_Rating", "Group_Rank", "Composite_Strength", 
+    "SMR_Strength", "RS_3_Mth", "RS_6_Mth", "Sales_Percentage_Chg_Last_Qtr", 
+    "Sales_Percentage_Chg_Last_Qtr_-_1_Qtr_Ago", "EPS_Percentage_Chg_Last_Qtr", 
+    "EPS_Percentage_Chg_Last_Qtr_-_1_Qtr_Ago", "Sales_Percentage_Chg_Last_Yr", 
+    "EPS_Percentage_Chg_Last_Yr", "EBIT_Margin_Last_Yr", "Pre-Tax_Margin_Last_Yr", 
+    "After_Tax_Margin_Last_Yr", "ROIC_Last_Yr", "ROE_Last_Yr", 
+    "LT_Debt__Equity_Last_Yr", "IPO_Date", "Industry_Group", 
+    "Percentage_from_Pivot_Weekly", "Days_from_Pivot", "Weeks_from_Pivot", 
+    "Blue_Dot_Count"
+]
+
 print(f"Reading existing data from '{MASTER_TAB_NAME}'...")
 try:
     master_ws = spreadsheet.worksheet(MASTER_TAB_NAME)
     df_master = pd.DataFrame(master_ws.get_all_records())
 except Exception as e:
     raise SystemExit(f"🛑 Error: Could not read Master tab. {e}")
+
+print("Reading Marketsmith Database...")
+try:
+    ms_ws = spreadsheet.worksheet("marketsmith database")
+    df_ms = pd.DataFrame(ms_ws.get_all_records())
+    if 'Symbol' in df_ms.columns:
+        df_ms['Symbol'] = df_ms['Symbol'].astype(str).str.strip()
+        valid_ms_cols = ['Symbol'] + [c for c in MS_COLS if c in df_ms.columns]
+        df_ms = df_ms[valid_ms_cols]
+    else:
+        df_ms = pd.DataFrame(columns=['Symbol'])
+except Exception as e:
+    print(f"Warning: Could not read Marketsmith tab: {e}")
+    df_ms = pd.DataFrame(columns=['Symbol'])
 
 tickers = (df_master['Symbol'].str.strip() + '.NS').tolist()
 
@@ -301,6 +327,12 @@ df_tech = pd.DataFrame.from_dict(tech_metrics, orient='index').reset_index()
 df_tech.rename(columns={'index': 'Symbol'}, inplace=True)
 df_final = pd.merge(df_master, df_tech, on='Symbol', how='left').fillna("")
 
+# 🟢 MERGE MARKETSMITH DATA
+if not df_ms.empty:
+    df_final = pd.merge(df_final, df_ms, on='Symbol', how='left')
+    for col in [c for c in df_ms.columns if c != 'Symbol']:
+        df_final[col] = df_final[col].replace(r'^\s*$', np.nan, regex=True).fillna("N/A")
+
 try:
     target_ws = spreadsheet.worksheet(TARGET_TAB_NAME)
     target_ws.clear()
@@ -367,7 +399,7 @@ try:
         'Up on Volume': up_on_vol,
         '52 Week High': high_52w_scan,
         'Watchlist One Day': wl_one_day
-    }).dropna().tail(130) # Extract exactly 6 Months
+    }).dropna().tail(130)
 
     breadth_tab = "Market_Breadth_History"
     try:
@@ -427,7 +459,6 @@ try:
                 df_index['21 EMA'] = round(df_index['Close'].ewm(span=21, adjust=False).mean(), 2)
                 df_index['50 EMA'] = round(df_index['Close'].ewm(span=50, adjust=False).mean(), 2)
                 
-                # --- NEW: STATIC IMAGE FALLBACK FOR GROWTH50 ---
                 df_idx_chart = df_index.tail(65).copy()
                 fig, ax1 = plt.subplots(1, 1, figsize=(4, 2.5))
                 fig.subplots_adjust(left=0.12, right=0.95, top=0.9, bottom=0.15)
@@ -456,7 +487,6 @@ try:
 
                 plt.savefig(f"charts/Chart_GROWTH50.png", dpi=120, facecolor=fig.get_facecolor(), edgecolor='none')
                 plt.close(fig)
-                # -----------------------------------------------
 
                 df_index.reset_index(inplace=True)
                 df_index['Date'] = df_index['Date'].dt.strftime('%Y-%m-%d')
