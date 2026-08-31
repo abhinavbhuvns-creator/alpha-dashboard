@@ -21,4 +21,4 @@ jobs:
       - name: Run Master Scanner
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-        run: python masterscanner.py
+        run: python master_scanner.py
