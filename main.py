@@ -161,10 +161,39 @@ for ticker in tickers:
         dist_6 = (close - df['ema6'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_9 = (close - df['ema9'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_21 = (close - df['ema21'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
-       
         dist_50 = (close - df['ema50'].iloc[-1]) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+
+        # 🟢 NICK DRENDEL SUPPORT GAP LOGIC
+        c_vals = df['Close'].values
+        l_vals = df['Low'].values
+        active_gaps = []
+        for j in range(1, len(c_vals)):
+            prev_c = c_vals[j-1]
+            curr_l = l_vals[j]
+            curr_c = c_vals[j]
+            if curr_l > prev_c:
+                active_gaps.append([curr_l, prev_c])
+            for k in range(len(active_gaps)-1, -1, -1):
+                if curr_c < active_gaps[k][0]:
+                    if curr_c <= active_gaps[k][1]:
+                        active_gaps.pop(k) # Gap Reclaimed
+                    else:
+                        active_gaps[k][0] = curr_c # Gap Shrinks
+            if len(active_gaps) > 20:
+                active_gaps.pop(0)
+                
+        nearest_sg_top = np.nan
+        if active_gaps:
+            min_diff = float('inf')
+            for gap in active_gaps:
+                diff = close - gap[0]
+                if diff >= 0 and diff < min_diff:
+                    min_diff = diff
+                    nearest_sg_top = gap[0]
+                    
+        dist_sg = (close - nearest_sg_top) / atr_14 if pd.notna(atr_14) and atr_14 != 0 and pd.notna(nearest_sg_top) else np.nan
 
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100
@@ -205,7 +234,8 @@ for ticker in tickers:
             "21 EMA (ATR)": round(dist_21, 2) if pd.notna(dist_21) else "",
             "50 EMA (ATR)": round(dist_50, 2) if pd.notna(dist_50) else "",
             "4W SMA (ATR)": round(dist_w4, 2) if pd.notna(dist_w4) else "",
-            "10W SMA (ATR)": round(dist_w10, 2) if pd.notna(dist_w10) else ""
+            "10W SMA (ATR)": round(dist_w10, 2) if pd.notna(dist_w10) else "",
+            "Supp Gap (ATR)": round(dist_sg, 2) if pd.notna(dist_sg) else ""
         }
 
         # STATIC CHART GEN
