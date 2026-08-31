@@ -256,6 +256,15 @@ for stock in all_unique_stocks:
         avg_rupee_vol_20 = (rupee_vol.rolling(window=20).mean().iloc[-1]) / 10000000
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100
+        
+        # 🟢 PREVIOUS WEEK RETURN LOGIC
+        if len(df) >= 12:
+            close_1w_ago = df['Close'].iloc[-6]
+            close_2w_ago = df['Close'].iloc[-11]
+            ret_prev_1w = ((close_1w_ago / close_2w_ago) - 1) * 100
+        else:
+            ret_prev_1w = np.nan
+
         ret_1m = df['Close'].pct_change(periods=21).iloc[-1] * 100
         if len(df) >= 64:
             close_1m_ago = df['Close'].iloc[-22]
@@ -268,7 +277,7 @@ for stock in all_unique_stocks:
         
         tech_data[stock] = {
             "close": close, "ema_21": ema_21, "ema_50": ema_50, "ema_150": ema_150,
-            "vol": avg_rupee_vol_20, "ret_1d": ret_1d, "ret_1w": ret_1w, "ret_1m": ret_1m,
+            "vol": avg_rupee_vol_20, "ret_1d": ret_1d, "ret_1w": ret_1w, "ret_prev_1w": ret_prev_1w, "ret_1m": ret_1m,
             "ret_prev_2m": ret_prev_2m, "adr": adr_20,
             "dist_9": dist_9, "dist_21": dist_21, "dist_50": dist_50,
             "dist_w4": dist_w4, "dist_w10": dist_w10, "dist_sg": dist_sg
@@ -280,7 +289,7 @@ for stock in all_unique_stocks:
 # ==========================================
 headers = [
     "Stock Symbol", "Ind Rank", "Industry Group", "ADR %", "Avg Rupee Vol (Cr)",
-    "1 Day Return %", "1 Week Return %", "1 Month Return %", "Prev 2M Return (Ending 1M Ago) %",
+    "1 Day Return %", "1 Week Return %", "Prev 1W Return %", "1 Month Return %", "Prev 2M Return (Ending 1M Ago) %",
     "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)", "Supp Gap (ATR)"
 ] + MS_COLS + scanners
 
@@ -294,7 +303,9 @@ def format_row(stock, scan_dict):
     
     row = [
         stock, current_rank, ind, round(td['adr'], 2), round(td['vol'], 2),
-        round(td['ret_1d'], 2), round(td['ret_1w'], 2), round(td['ret_1m'], 2),
+        round(td['ret_1d'], 2), round(td['ret_1w'], 2), 
+        round(td['ret_prev_1w'], 2) if pd.notna(td['ret_prev_1w']) else "",
+        round(td['ret_1m'], 2),
         round(td['ret_prev_2m'], 2) if pd.notna(td['ret_prev_2m']) else "",
         round(td['dist_9'], 2) if pd.notna(td['dist_9']) else "",
         round(td['dist_21'], 2) if pd.notna(td['dist_21']) else "",
