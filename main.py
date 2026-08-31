@@ -144,7 +144,9 @@ for ticker in tickers:
         df['ema21'] = df['Close'].ewm(span=21, adjust=False).mean()
         df['ema50'] = df['Close'].ewm(span=50, adjust=False).mean()
    
-        weekly_df = df.resample('W-FRI').agg({'Close': 'last', 'Volume': 'sum'}).dropna()
+        # 🟢 GET WEEKLY OPEN AND CLOSE FOR CANDLE BODY LOGIC
+        weekly_df = df.resample('W-FRI').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+        
         if len(weekly_df) >= 10:
             wk_sma_4 = weekly_df['Close'].rolling(4).mean().iloc[-1]
             wk_sma_10 = weekly_df['Close'].rolling(10).mean().iloc[-1]
@@ -165,7 +167,7 @@ for ticker in tickers:
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
 
-        # 🟢 NICK DRENDEL SUPPORT GAP LOGIC
+        # NICK DRENDEL SUPPORT GAP LOGIC
         c_vals = df['Close'].values
         l_vals = df['Low'].values
         active_gaps = []
@@ -196,14 +198,15 @@ for ticker in tickers:
         dist_sg = (close - nearest_sg_top) / atr_14 if pd.notna(atr_14) and atr_14 != 0 and pd.notna(nearest_sg_top) else np.nan
 
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
+        ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100 # Kept for Scanner Rule
         
-        # 🟢 CALENDAR WEEKLY CANDLE RETURN LOGIC
-        if len(weekly_df) >= 3:
-            ret_1w = ((weekly_df['Close'].iloc[-1] / weekly_df['Close'].iloc[-2]) - 1) * 100
-            ret_prev_1w = ((weekly_df['Close'].iloc[-2] / weekly_df['Close'].iloc[-3]) - 1) * 100
+        # 🟢 CANDLE BODY PERCENTAGE LOGIC (Mon Open to Current Close)
+        if len(weekly_df) >= 2:
+            ret_curr_wk_body = ((weekly_df['Close'].iloc[-1] / weekly_df['Open'].iloc[-1]) - 1) * 100
+            ret_prev_wk_body = ((weekly_df['Close'].iloc[-2] / weekly_df['Open'].iloc[-2]) - 1) * 100
         else:
-            ret_1w = np.nan
-            ret_prev_1w = np.nan
+            ret_curr_wk_body = np.nan
+            ret_prev_wk_body = np.nan
 
         ret_1m = df['Close'].pct_change(periods=21).iloc[-1] * 100 if len(df) >= 22 else None
         ret_3m = df['Close'].pct_change(periods=63).iloc[-1] * 100 if len(df) >= 64 else None
@@ -225,7 +228,8 @@ for ticker in tickers:
             "PPV (4W)": int(ppv_4w_count) if pd.notna(ppv_4w_count) else 0,
             "1 Day Return %": round(ret_1d, 2) if pd.notna(ret_1d) else "",
             "1 Week Return %": round(ret_1w, 2) if pd.notna(ret_1w) else "",
-            "Prev 1W Return %": round(ret_prev_1w, 2) if pd.notna(ret_prev_1w) else "",
+            "Curr Wk Body %": round(ret_curr_wk_body, 2) if pd.notna(ret_curr_wk_body) else "",
+            "Prev Wk Body %": round(ret_prev_wk_body, 2) if pd.notna(ret_prev_wk_body) else "",
             "1 Month Return %": round(ret_1m, 2) if pd.notna(ret_1m) else "",
             "Prev 2M Return (Ending 1M Ago) %": round(ret_past_2m_till_last_month, 2) if pd.notna(ret_past_2m_till_last_month) else "",
             "3 Month Return %": round(ret_3m, 2) if pd.notna(ret_3m) else "",
