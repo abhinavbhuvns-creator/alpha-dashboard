@@ -247,9 +247,39 @@ for ticker in all_shortlisted:
                         dw4 = dist_w4_df.loc[latest_date_obj, ticker]
                         dw10 = dist_w10_df.loc[latest_date_obj, ticker]
 
+                        # 🟢 NICK DRENDEL SUPPORT GAP LOGIC
+                        c_series = close_df.loc[:latest_date_obj, ticker].dropna().values
+                        l_series = low_df.loc[:latest_date_obj, ticker].dropna().values
+                        active_gaps = []
+                        for j in range(1, len(c_series)):
+                            prev_c = c_series[j-1]
+                            curr_l = l_series[j]
+                            curr_c = c_series[j]
+                            if curr_l > prev_c:
+                                active_gaps.append([curr_l, prev_c])
+                            for k in range(len(active_gaps)-1, -1, -1):
+                                if curr_c < active_gaps[k][0]:
+                                    if curr_c <= active_gaps[k][1]:
+                                        active_gaps.pop(k)
+                                    else:
+                                        active_gaps[k][0] = curr_c
+                            if len(active_gaps) > 20: active_gaps.pop(0)
+
+                        nearest_sg_top = np.nan
+                        if active_gaps:
+                            final_c = c_series[-1]
+                            min_diff = float('inf')
+                            for gap in active_gaps:
+                                diff = final_c - gap[0]
+                                if diff >= 0 and diff < min_diff:
+                                    min_diff = diff
+                                    nearest_sg_top = gap[0]
+
+                        atr_val = atr_14_df.loc[latest_date_obj, ticker]
+                        dsg = (final_c - nearest_sg_top) / atr_val if pd.notna(atr_val) and atr_val != 0 and pd.notna(nearest_sg_top) else np.nan
+
                         industry = industry_map.get(stock_name, "Unclassified")
                         
-                        # 🟢 MAP MARKETSMITH DATA
                         ms_data = ms_dict.get(stock_name, {})
                         ms_row = []
                         for col in MS_COLS:
@@ -264,7 +294,8 @@ for ticker in all_shortlisted:
                             round(d21, 2) if pd.notna(d21) else "N/A",
                             round(d50, 2) if pd.notna(d50) else "N/A",
                             round(dw4, 2) if pd.notna(dw4) else "N/A",
-                            round(dw10, 2) if pd.notna(dw10) else "N/A"
+                            round(dw10, 2) if pd.notna(dw10) else "N/A",
+                            round(dsg, 2) if pd.notna(dsg) else "N/A"
                         ] + ms_row)
     except Exception as e:
         continue
@@ -276,10 +307,8 @@ print("\nExporting all formatted data to Unified Google Sheet...")
 
 headers = [
     "Trigger Date", "Stock Symbol", "Industry Group", "Avg Rupee Vol (Cr)", "ADR %",
-    "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)"
+    "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)", "Supp Gap (ATR)"
 ] + MS_COLS
-
-col_letter = chr(ord('A') + len(headers) - 1) if len(headers) <= 26 else 'Z' # Safe fallback logic mapping included below
 
 def get_column_letter(col_idx):
     col_str = ""
