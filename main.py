@@ -196,14 +196,13 @@ for ticker in tickers:
         dist_sg = (close - nearest_sg_top) / atr_14 if pd.notna(atr_14) and atr_14 != 0 and pd.notna(nearest_sg_top) else np.nan
 
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
-        ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100
         
-        # 🟢 PREVIOUS WEEK RETURN LOGIC
-        if len(df) >= 12:
-            close_1w_ago = df['Close'].iloc[-6]
-            close_2w_ago = df['Close'].iloc[-11]
-            ret_prev_1w = ((close_1w_ago / close_2w_ago) - 1) * 100
+        # 🟢 CALENDAR WEEKLY CANDLE RETURN LOGIC
+        if len(weekly_df) >= 3:
+            ret_1w = ((weekly_df['Close'].iloc[-1] / weekly_df['Close'].iloc[-2]) - 1) * 100
+            ret_prev_1w = ((weekly_df['Close'].iloc[-2] / weekly_df['Close'].iloc[-3]) - 1) * 100
         else:
+            ret_1w = np.nan
             ret_prev_1w = np.nan
 
         ret_1m = df['Close'].pct_change(periods=21).iloc[-1] * 100 if len(df) >= 22 else None
