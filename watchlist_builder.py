@@ -9,7 +9,6 @@ import gspread
 import requests
 from google.oauth2.service_account import Credentials
 
-# Silence performance and date parsing warnings
 warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 warnings.filterwarnings('ignore', message='.*Parsing dates.*')
 pd.options.mode.chained_assignment = None
@@ -21,24 +20,47 @@ print("Authenticating with Google Service Account...")
 creds_json = os.environ.get('GOOGLE_CREDENTIALS')
 if not creds_json:
     raise SystemExit("🛑 Error: GOOGLE_CREDENTIALS not found in GitHub Secrets.")
-
 creds_dict = json.loads(creds_json)
 scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(creds)
-
 SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
 master_ss = gc.open_by_url(SINGLE_SHEET_URL)
 target_ss = gc.open_by_url(SINGLE_SHEET_URL)
 
 # ==========================================
-# 2. GET INDUSTRY MAPPING & RANKS
+# 2. GET INDUSTRY MAPPING & MARKETSMITH
 # ==========================================
+MS_COLS = [
+    "EPS_Rating", "RS_Rating", "AD_Rating", "Group_Rank", "Composite_Strength", 
+    "SMR_Strength", "RS_3_Mth", "RS_6_Mth", "Sales_Percentage_Chg_Last_Qtr", 
+    "Sales_Percentage_Chg_Last_Qtr_-_1_Qtr_Ago", "EPS_Percentage_Chg_Last_Qtr", 
+    "EPS_Percentage_Chg_Last_Qtr_-_1_Qtr_Ago", "Sales_Percentage_Chg_Last_Yr", 
+    "EPS_Percentage_Chg_Last_Yr", "EBIT_Margin_Last_Yr", "Pre-Tax_Margin_Last_Yr", 
+    "After_Tax_Margin_Last_Yr", "ROIC_Last_Yr", "ROE_Last_Yr", 
+    "LT_Debt__Equity_Last_Yr", "IPO_Date", "Industry_Group", 
+    "Percentage_from_Pivot_Weekly", "Days_from_Pivot", "Weeks_from_Pivot", 
+    "Blue_Dot_Count"
+]
+
 print("Mapping stocks to industries from Unified Sheet...")
 master_ws = master_ss.worksheet("Avg_Rupee_Volume_Master")
 master_data = master_ws.get_all_records()
 df_master = pd.DataFrame(master_data)
 stock_to_industry = df_master.set_index('Symbol')['Industry Group'].to_dict()
+
+print("Reading Marketsmith Database...")
+try:
+    ms_ws = master_ss.worksheet("marketsmith database")
+    df_ms = pd.DataFrame(ms_ws.get_all_records())
+    if 'Symbol' in df_ms.columns:
+        df_ms['Symbol'] = df_ms['Symbol'].astype(str).str.strip()
+        ms_dict = df_ms.set_index('Symbol').to_dict('index')
+    else:
+        ms_dict = {}
+except Exception as e:
+    print(f"Warning: Could not read Marketsmith tab: {e}")
+    ms_dict = {}
 
 print("Fetching Industry Ranks...")
 industry_rank_map = {}
@@ -51,7 +73,6 @@ try:
         
         ind_col = next((c for c in headers if "industry" in c), None)
         rank_col = next((c for c in headers if "rank" in c and "history" not in c), None)
-
         if ind_col and rank_col:
             industry_rank_map = df_ranks.set_index(ind_col)[rank_col].to_dict()
 except Exception as e:
@@ -69,7 +90,6 @@ except gspread.exceptions.WorksheetNotFound:
 
 scanners = []
 rules_universe = {}
-
 for row in settings_data[1:]:
     if len(row) >= 2:
         scan_name = row[0].strip()
@@ -87,18 +107,15 @@ for sheet in all_tabs:
 
 all_dates = []
 raw_scanner_data = {}
-
 for scan in scanners:
     target_name = scan.replace(" ", "").upper()
     if target_name == "SIXMONTHSTRENGTH" and "6MONTHSTRENGTH" in tab_mapping:
         target_name = "6MONTHSTRENGTH"
     if target_name not in tab_mapping:
         continue
-
     ws = tab_mapping[target_name]
     data = ws.get_all_values()
     raw_scanner_data[scan] = data
-
     for row in data[1:]:
         if len(row) >= 2 and row[0] != "Trigger Date":
             try: all_dates.append(pd.to_datetime(row[0].strip(), format='mixed', dayfirst=True).normalize()) 
@@ -109,31 +126,25 @@ print(f"Latest Market Date identified as: {latest_trading_date.strftime('%Y-%m-%
 
 universe_tracker = {}
 oneday_tracker = {}
-
 for scan, data in raw_scanner_data.items():
     if len(data) <= 1: continue
     lookback_days = rules_universe.get(scan, 0)
     cutoff_date_univ = latest_trading_date - pd.Timedelta(days=lookback_days)
-
     for row in data[1:]:
         if len(row) < 2: continue
         stock = row[1].strip().upper() 
         if not stock or stock == "STOCK SYMBOL": continue
-
         if lookback_days >= 9000:
             if stock not in universe_tracker: universe_tracker[stock] = {s: "No" for s in scanners}
             universe_tracker[stock][scan] = "Yes"
             if stock not in oneday_tracker: oneday_tracker[stock] = {s: "No" for s in scanners}
             oneday_tracker[stock][scan] = "Yes"
             continue
-
         try: trigger_date = pd.to_datetime(row[0].strip(), format='mixed', dayfirst=True).normalize() 
         except: continue
-
         if trigger_date >= cutoff_date_univ:
             if stock not in universe_tracker: universe_tracker[stock] = {s: "No" for s in scanners}
             universe_tracker[stock][scan] = "Yes"
-
         if trigger_date == latest_trading_date:
             if stock not in oneday_tracker: oneday_tracker[stock] = {s: "No" for s in scanners}
             oneday_tracker[stock][scan] = "Yes"
@@ -146,7 +157,6 @@ print(f"Found {len(all_unique_stocks)} unique stocks matching timeframe rules.")
 # ==========================================
 print("Downloading recent technical data for shortlisted stocks...")
 tickers = [s + '.NS' for s in all_unique_stocks]
-
 session = requests.Session()
 session.headers.update({
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -155,7 +165,6 @@ session.headers.update({
 chunk_size = 20
 ticker_chunks = [tickers[i:i + chunk_size] for i in range(0, len(tickers), chunk_size)]
 all_chunks = []
-
 if len(tickers) > 0:
     for i, chunk in enumerate(ticker_chunks):
         print(f" -> Downloading price batch {i+1} of {len(ticker_chunks)}...")
@@ -175,14 +184,12 @@ if len(tickers) > 0:
         if not success:
             raise SystemExit(f"🛑 CRITICAL ERROR: Yahoo permanently blocked batch {i+1}. Run the dashboard again later.")
         time.sleep(5) 
-
     if all_chunks: data = pd.concat(all_chunks, axis=1)
     else: data = pd.DataFrame()
 else:
     data = pd.DataFrame()
 
 tech_data = {}
-
 print("Calculating EMAs, Returns, Squeeze Metric, ATR Distances, and ADR...")
 for stock in all_unique_stocks:
     ticker = stock + '.NS'
@@ -191,22 +198,18 @@ for stock in all_unique_stocks:
         else:
             if ticker not in data.columns.levels[0]: continue
             df = data[ticker].copy()
-
         df = df.dropna(subset=['Close'])
         if df.empty or len(df) < 150: continue
-
         df['tr1'] = df['High'] - df['Low']
         df['tr2'] = abs(df['High'] - df['Close'].shift(1))
         df['tr3'] = abs(df['Low'] - df['Close'].shift(1))
         df['TR'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
         atr_14 = df['TR'].rolling(14).mean().iloc[-1]
-
         close = df['Close'].iloc[-1]
         ema_9 = df['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
         ema_21 = df['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
         ema_50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
         ema_150 = df['Close'].ewm(span=150, adjust=False).mean().iloc[-1]
-
         weekly_df = df['Close'].resample('W-FRI').last().dropna()
         if len(weekly_df) >= 10:
             wk_sma_4 = weekly_df.rolling(4).mean().iloc[-1]
@@ -214,30 +217,24 @@ for stock in all_unique_stocks:
         else:
             wk_sma_4 = np.nan
             wk_sma_10 = np.nan
-
         dist_9 = (close - ema_9) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_21 = (close - ema_21) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_50 = (close - ema_50) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
-
         rupee_vol = df['Close'] * df['Volume']
         avg_rupee_vol_20 = (rupee_vol.rolling(window=20).mean().iloc[-1]) / 10000000
-
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100
         ret_1m = df['Close'].pct_change(periods=21).iloc[-1] * 100
-
         if len(df) >= 64:
             close_1m_ago = df['Close'].iloc[-22]
             close_3m_ago = df['Close'].iloc[-64]
             ret_prev_2m = ((close_1m_ago / close_3m_ago) - 1) * 100
         else:
             ret_prev_2m = np.nan
-
         daily_range = (df['High'] / df['Low']) - 1
         adr_20 = daily_range.rolling(window=20).mean().iloc[-1] * 100
-
         tech_data[stock] = {
             "close": close, "ema_21": ema_21, "ema_50": ema_50, "ema_150": ema_150,
             "vol": avg_rupee_vol_20, "ret_1d": ret_1d, "ret_1w": ret_1w, "ret_1m": ret_1m,
@@ -254,7 +251,7 @@ headers = [
     "Stock Symbol", "Ind Rank", "Industry Group", "ADR %", "Avg Rupee Vol (Cr)",
     "1 Day Return %", "1 Week Return %", "1 Month Return %", "Prev 2M Return (Ending 1M Ago) %",
     "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)"
-] + scanners
+] + MS_COLS + scanners
 
 def format_row(stock, scan_dict):
     td = tech_data.get(stock)
@@ -263,7 +260,7 @@ def format_row(stock, scan_dict):
     
     ind_key = ind.lower() if isinstance(ind, str) else ""
     current_rank = industry_rank_map.get(ind_key, "N/A")
-
+    
     row = [
         stock, current_rank, ind, round(td['adr'], 2), round(td['vol'], 2),
         round(td['ret_1d'], 2), round(td['ret_1w'], 2), round(td['ret_1m'], 2),
@@ -274,6 +271,14 @@ def format_row(stock, scan_dict):
         round(td['dist_w4'], 2) if pd.notna(td['dist_w4']) else "",
         round(td['dist_w10'], 2) if pd.notna(td['dist_w10']) else ""
     ]
+    
+    # 🟢 MAP MARKETSMITH DATA
+    ms_data = ms_dict.get(stock, {})
+    for col in MS_COLS:
+        val = ms_data.get(col, "N/A")
+        if val == "": val = "N/A"
+        row.append(val)
+        
     for scan in scanners:
         row.append(scan_dict.get(scan, "No"))
     return row
@@ -304,7 +309,6 @@ for stock, scans in oneday_tracker.items():
 # 6. EXPORT TO GOOGLE SHEETS
 # ==========================================
 def get_column_letter(col_idx):
-    """Convert 1-based column index to Excel-style letter (1->A, 27->AA)"""
     col_str = ""
     while col_idx > 0:
         col_idx, remainder = divmod(col_idx - 1, 26)
@@ -317,10 +321,8 @@ def write_to_sheet(tab_name, data):
         ws = target_ss.worksheet(tab_name)
         ws.clear()
     except gspread.exceptions.WorksheetNotFound:
-        ws = target_ss.add_worksheet(title=tab_name, rows="1000", cols="30")
-
+        ws = target_ss.add_worksheet(title=tab_name, rows="1000", cols="50")
     if len(data) > 1:
-        # THE FIX: Dynamically handle any number of columns (A through ZZ+)
         col_letter = get_column_letter(len(headers))
         
         ws.update(values=data, range_name='A1', value_input_option='USER_ENTERED')
@@ -339,5 +341,4 @@ print("\nFinalizing outputs...")
 write_to_sheet("universe", universe_output)
 write_to_sheet("watchlist", watchlist_output)
 write_to_sheet("watchlist one day", oneday_output)
-
 print("\nDashboard Creation Complete! All 3 tabs are ready in your Target Sheet.")
