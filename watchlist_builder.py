@@ -222,6 +222,36 @@ for stock in all_unique_stocks:
         dist_50 = (close - ema_50) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
+
+        # 🟢 NICK DRENDEL SUPPORT GAP LOGIC
+        c_vals = df['Close'].values
+        l_vals = df['Low'].values
+        active_gaps = []
+        for j in range(1, len(c_vals)):
+            prev_c = c_vals[j-1]
+            curr_l = l_vals[j]
+            curr_c = c_vals[j]
+            if curr_l > prev_c:
+                active_gaps.append([curr_l, prev_c])
+            for k in range(len(active_gaps)-1, -1, -1):
+                if curr_c < active_gaps[k][0]:
+                    if curr_c <= active_gaps[k][1]:
+                        active_gaps.pop(k)
+                    else:
+                        active_gaps[k][0] = curr_c
+            if len(active_gaps) > 20: active_gaps.pop(0)
+
+        nearest_sg_top = np.nan
+        if active_gaps:
+            min_diff = float('inf')
+            for gap in active_gaps:
+                diff = close - gap[0]
+                if diff >= 0 and diff < min_diff:
+                    min_diff = diff
+                    nearest_sg_top = gap[0]
+
+        dist_sg = (close - nearest_sg_top) / atr_14 if pd.notna(atr_14) and atr_14 != 0 and pd.notna(nearest_sg_top) else np.nan
+
         rupee_vol = df['Close'] * df['Volume']
         avg_rupee_vol_20 = (rupee_vol.rolling(window=20).mean().iloc[-1]) / 10000000
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
@@ -235,12 +265,13 @@ for stock in all_unique_stocks:
             ret_prev_2m = np.nan
         daily_range = (df['High'] / df['Low']) - 1
         adr_20 = daily_range.rolling(window=20).mean().iloc[-1] * 100
+        
         tech_data[stock] = {
             "close": close, "ema_21": ema_21, "ema_50": ema_50, "ema_150": ema_150,
             "vol": avg_rupee_vol_20, "ret_1d": ret_1d, "ret_1w": ret_1w, "ret_1m": ret_1m,
             "ret_prev_2m": ret_prev_2m, "adr": adr_20,
             "dist_9": dist_9, "dist_21": dist_21, "dist_50": dist_50,
-            "dist_w4": dist_w4, "dist_w10": dist_w10
+            "dist_w4": dist_w4, "dist_w10": dist_w10, "dist_sg": dist_sg
         }
     except Exception as e: continue
 
@@ -250,7 +281,7 @@ for stock in all_unique_stocks:
 headers = [
     "Stock Symbol", "Ind Rank", "Industry Group", "ADR %", "Avg Rupee Vol (Cr)",
     "1 Day Return %", "1 Week Return %", "1 Month Return %", "Prev 2M Return (Ending 1M Ago) %",
-    "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)"
+    "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)", "Supp Gap (ATR)"
 ] + MS_COLS + scanners
 
 def format_row(stock, scan_dict):
@@ -269,10 +300,10 @@ def format_row(stock, scan_dict):
         round(td['dist_21'], 2) if pd.notna(td['dist_21']) else "",
         round(td['dist_50'], 2) if pd.notna(td['dist_50']) else "",
         round(td['dist_w4'], 2) if pd.notna(td['dist_w4']) else "",
-        round(td['dist_w10'], 2) if pd.notna(td['dist_w10']) else ""
+        round(td['dist_w10'], 2) if pd.notna(td['dist_w10']) else "",
+        round(td['dist_sg'], 2) if pd.notna(td['dist_sg']) else ""
     ]
     
-    # 🟢 MAP MARKETSMITH DATA
     ms_data = ms_dict.get(stock, {})
     for col in MS_COLS:
         val = ms_data.get(col, "N/A")
