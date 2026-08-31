@@ -197,6 +197,15 @@ for ticker in tickers:
 
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100
+        
+        # 🟢 PREVIOUS WEEK RETURN LOGIC
+        if len(df) >= 12:
+            close_1w_ago = df['Close'].iloc[-6]
+            close_2w_ago = df['Close'].iloc[-11]
+            ret_prev_1w = ((close_1w_ago / close_2w_ago) - 1) * 100
+        else:
+            ret_prev_1w = np.nan
+
         ret_1m = df['Close'].pct_change(periods=21).iloc[-1] * 100 if len(df) >= 22 else None
         ret_3m = df['Close'].pct_change(periods=63).iloc[-1] * 100 if len(df) >= 64 else None
         ret_6m = df['Close'].pct_change(periods=126).iloc[-1] * 100 if len(df) >= 127 else None
@@ -217,6 +226,7 @@ for ticker in tickers:
             "PPV (4W)": int(ppv_4w_count) if pd.notna(ppv_4w_count) else 0,
             "1 Day Return %": round(ret_1d, 2) if pd.notna(ret_1d) else "",
             "1 Week Return %": round(ret_1w, 2) if pd.notna(ret_1w) else "",
+            "Prev 1W Return %": round(ret_prev_1w, 2) if pd.notna(ret_prev_1w) else "",
             "1 Month Return %": round(ret_1m, 2) if pd.notna(ret_1m) else "",
             "Prev 2M Return (Ending 1M Ago) %": round(ret_past_2m_till_last_month, 2) if pd.notna(ret_past_2m_till_last_month) else "",
             "3 Month Return %": round(ret_3m, 2) if pd.notna(ret_3m) else "",
