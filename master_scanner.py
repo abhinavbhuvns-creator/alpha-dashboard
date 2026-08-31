@@ -93,12 +93,12 @@ for i, chunk in enumerate(ticker_chunks):
 
 data = pd.concat(all_chunks, axis=1)
 
-# 🟢 SQUASH TIMESTAMPS
+# 🟢 TIME SQUASH
 if not data.empty:
     data.index = pd.to_datetime(data.index).normalize()
     data = data.groupby(data.index).max()
 
-# 🟢 RESTORED SHIELD: .ffill() and .fillna(0) added to protect illiquid stocks from N/A errors
+# 🟢 DATA HOLE SHIELD RESTORED (.ffill() / .fillna(0))
 close_df = pd.DataFrame({t: data[t]['Close'] for t in tickers if t in data.columns.levels[0]}).ffill()
 vol_df = pd.DataFrame({t: data[t]['Volume'] for t in tickers if t in data.columns.levels[0]}).fillna(0)
 low_df = pd.DataFrame({t: data[t]['Low'] for t in tickers if t in data.columns.levels[0]}).ffill()
