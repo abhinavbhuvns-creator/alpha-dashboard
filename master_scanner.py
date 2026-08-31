@@ -25,12 +25,24 @@ creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(creds)
 
 # ==========================================
-# 2. READ UNIFIED SHEET
+# 2. READ UNIFIED SHEET & MARKETSMITH
 # ==========================================
 SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
 
 master_ss = gc.open_by_url(SINGLE_SHEET_URL)
 target_ss = gc.open_by_url(SINGLE_SHEET_URL)
+
+MS_COLS = [
+    "EPS_Rating", "RS_Rating", "AD_Rating", "Group_Rank", "Composite_Strength", 
+    "SMR_Strength", "RS_3_Mth", "RS_6_Mth", "Sales_Percentage_Chg_Last_Qtr", 
+    "Sales_Percentage_Chg_Last_Qtr_-_1_Qtr_Ago", "EPS_Percentage_Chg_Last_Qtr", 
+    "EPS_Percentage_Chg_Last_Qtr_-_1_Qtr_Ago", "Sales_Percentage_Chg_Last_Yr", 
+    "EPS_Percentage_Chg_Last_Yr", "EBIT_Margin_Last_Yr", "Pre-Tax_Margin_Last_Yr", 
+    "After_Tax_Margin_Last_Yr", "ROIC_Last_Yr", "ROE_Last_Yr", 
+    "LT_Debt__Equity_Last_Yr", "IPO_Date", "Industry_Group", 
+    "Percentage_from_Pivot_Weekly", "Days_from_Pivot", "Weeks_from_Pivot", 
+    "Blue_Dot_Count"
+]
 
 print("Reading Tickers, Volumes, and Industries from Unified Sheet...")
 try:
@@ -43,6 +55,19 @@ master_df = pd.DataFrame(master_data)
 
 if 'Symbol' not in master_df.columns:
     raise SystemExit("🛑 Error: Could not find 'Symbol' column in the Master Sheet.")
+
+print("Reading Marketsmith Database...")
+try:
+    ms_ws = master_ss.worksheet("marketsmith database")
+    df_ms = pd.DataFrame(ms_ws.get_all_records())
+    if 'Symbol' in df_ms.columns:
+        df_ms['Symbol'] = df_ms['Symbol'].astype(str).str.strip()
+        ms_dict = df_ms.set_index('Symbol').to_dict('index')
+    else:
+        ms_dict = {}
+except Exception as e:
+    print(f"Warning: Could not read Marketsmith tab: {e}")
+    ms_dict = {}
 
 tickers = (master_df['Symbol'].str.strip() + '.NS').tolist()
 
@@ -68,16 +93,14 @@ for i, chunk in enumerate(ticker_chunks):
 
 data = pd.concat(all_chunks, axis=1)
 
-# 🟢 FIX 1: SQUASH TIMESTAMPS: Align all chunks to midnight so vectorization works perfectly.
 if not data.empty:
     data.index = pd.to_datetime(data.index).normalize()
     data = data.groupby(data.index).max()
 
-# 🟢 FIX 2: THE "DATA HOLE" SHIELD (Forward Fill Prices, Zero Fill Volume)
-close_df = pd.DataFrame({t: data[t]['Close'] for t in tickers if t in data.columns.levels[0]}).ffill()
-vol_df = pd.DataFrame({t: data[t]['Volume'] for t in tickers if t in data.columns.levels[0]}).fillna(0)
-low_df = pd.DataFrame({t: data[t]['Low'] for t in tickers if t in data.columns.levels[0]}).ffill()
-high_df = pd.DataFrame({t: data[t]['High'] for t in tickers if t in data.columns.levels[0]}).ffill()
+close_df = pd.DataFrame({t: data[t]['Close'] for t in tickers if t in data.columns.levels[0]})
+vol_df = pd.DataFrame({t: data[t]['Volume'] for t in tickers if t in data.columns.levels[0]})
+low_df = pd.DataFrame({t: data[t]['Low'] for t in tickers if t in data.columns.levels[0]})
+high_df = pd.DataFrame({t: data[t]['High'] for t in tickers if t in data.columns.levels[0]})
 
 close_df.index = close_df.index.tz_localize(None)
 vol_df.index = vol_df.index.tz_localize(None)
@@ -97,7 +120,6 @@ adr_20_df = ((high_df / low_df) - 1).rolling(window=20).mean() * 100
 
 base_rules = close_df > 40
 
-# --- FAST VECTORIZED ATR & EMA/SMA DISTANCES ---
 ema_9_df = close_df.ewm(span=9, adjust=False).mean()
 ema_21_df = close_df.ewm(span=21, adjust=False).mean()
 ema_50_df = close_df.ewm(span=50, adjust=False).mean()
@@ -106,7 +128,7 @@ tr1 = high_df - low_df
 tr2 = (high_df - close_df.shift(1)).abs()
 tr3 = (low_df - close_df.shift(1)).abs()
 tr_df = pd.DataFrame(np.maximum(tr1.values, np.maximum(tr2.values, tr3.values)), index=close_df.index, columns=close_df.columns)
-atr_14_df = tr_df.rolling(window=14).mean().replace(0, np.nan) # Prevent division by zero
+atr_14_df = tr_df.rolling(window=14).mean().replace(0, np.nan) 
 
 weekly_close_df = close_df.resample('W-FRI').last()
 daily_sma_4_df = weekly_close_df.rolling(4).mean().reindex(close_df.index, method='ffill')
@@ -118,7 +140,6 @@ dist_50_df = (close_df - ema_50_df) / atr_14_df
 dist_w4_df = (close_df - daily_sma_4_df) / atr_14_df
 dist_w10_df = (close_df - daily_sma_10_df) / atr_14_df
 
-# --- WEEKLY POCKET PIVOT VECTORIZATION ---
 pp_mask_df = pd.DataFrame(False, index=close_df.index, columns=close_df.columns)
 
 for ticker in tickers:
@@ -220,7 +241,6 @@ for ticker in all_shortlisted:
 
                         trigger_adr = adr_6m.loc[latest_date_obj, ticker]
                         
-                        # Fetch the 5 ATR Distances for this exact date and ticker
                         d9 = dist_9_df.loc[latest_date_obj, ticker]
                         d21 = dist_21_df.loc[latest_date_obj, ticker]
                         d50 = dist_50_df.loc[latest_date_obj, ticker]
@@ -228,6 +248,14 @@ for ticker in all_shortlisted:
                         dw10 = dist_w10_df.loc[latest_date_obj, ticker]
 
                         industry = industry_map.get(stock_name, "Unclassified")
+                        
+                        # 🟢 MAP MARKETSMITH DATA
+                        ms_data = ms_dict.get(stock_name, {})
+                        ms_row = []
+                        for col in MS_COLS:
+                            val = ms_data.get(col, "N/A")
+                            if val == "": val = "N/A"
+                            ms_row.append(val)
 
                         results[scan_name].append([
                             latest_date_str, stock_name, industry, avg_vol_crores,
@@ -237,7 +265,7 @@ for ticker in all_shortlisted:
                             round(d50, 2) if pd.notna(d50) else "N/A",
                             round(dw4, 2) if pd.notna(dw4) else "N/A",
                             round(dw10, 2) if pd.notna(dw10) else "N/A"
-                        ])
+                        ] + ms_row)
     except Exception as e:
         continue
 
@@ -249,22 +277,32 @@ print("\nExporting all formatted data to Unified Google Sheet...")
 headers = [
     "Trigger Date", "Stock Symbol", "Industry Group", "Avg Rupee Vol (Cr)", "ADR %",
     "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)"
-]
-col_letter = chr(ord('A') + len(headers) - 1)
+] + MS_COLS
+
+col_letter = chr(ord('A') + len(headers) - 1) if len(headers) <= 26 else 'Z' # Safe fallback logic mapping included below
+
+def get_column_letter(col_idx):
+    col_str = ""
+    while col_idx > 0:
+        col_idx, remainder = divmod(col_idx - 1, 26)
+        col_str = chr(65 + remainder) + col_str
+    return col_str
+
+dynamic_col_letter = get_column_letter(len(headers))
 
 for tab_name, matched_stocks in results.items():
     try:
         worksheet = target_ss.worksheet(tab_name)
         worksheet.clear()
     except gspread.exceptions.WorksheetNotFound:
-        worksheet = target_ss.add_worksheet(title=tab_name, rows="1000", cols="20")
+        worksheet = target_ss.add_worksheet(title=tab_name, rows="1000", cols="50")
 
     matched_stocks.sort(key=lambda x: x[0], reverse=True)
     sheet_output = [headers] + matched_stocks
 
     if len(sheet_output) > 1:
         worksheet.update(values=sheet_output, range_name='A1', value_input_option='USER_ENTERED')
-        worksheet.format(f'A1:{col_letter}1', {
+        worksheet.format(f'A1:{dynamic_col_letter}1', {
             "backgroundColor": {"red": 0.1, "green": 0.2, "blue": 0.4},
             "horizontalAlignment": "CENTER",
             "textFormat": {"foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}, "bold": True}
