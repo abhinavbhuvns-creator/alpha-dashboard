@@ -70,7 +70,6 @@ except Exception as e:
     ms_dict = {}
 
 tickers = (master_df['Symbol'].str.strip() + '.NS').tolist()
-
 industry_map = master_df.set_index('Symbol')['Industry Group'].to_dict()
 volume_map = master_df.set_index('Symbol')['Avg_Rupee_Volume_Crores'].to_dict()
 
@@ -93,12 +92,10 @@ for i, chunk in enumerate(ticker_chunks):
 
 data = pd.concat(all_chunks, axis=1)
 
-# 🟢 TIME SQUASH
 if not data.empty:
     data.index = pd.to_datetime(data.index).normalize()
     data = data.groupby(data.index).max()
 
-# 🟢 DATA HOLE SHIELD RESTORED (.ffill() / .fillna(0))
 close_df = pd.DataFrame({t: data[t]['Close'] for t in tickers if t in data.columns.levels[0]}).ffill()
 vol_df = pd.DataFrame({t: data[t]['Volume'] for t in tickers if t in data.columns.levels[0]}).fillna(0)
 low_df = pd.DataFrame({t: data[t]['Low'] for t in tickers if t in data.columns.levels[0]}).ffill()
@@ -110,7 +107,7 @@ low_df.index = low_df.index.tz_localize(None)
 high_df.index = high_df.index.tz_localize(None)
 
 # ==========================================
-# 4. CRUNCH TECHNICALS, POCKET PIVOT & ATR DISTANCES
+# 4. CRUNCH TECHNICALS, POCKET PIVOT & ATR
 # ==========================================
 print("Crunching technical criteria, ATR Distances, and Weekly Pocket Pivots...")
 
@@ -118,7 +115,11 @@ low_52w = low_df.rolling(window=252, min_periods=200).min()
 avg_vol_50 = vol_df.rolling(window=50).mean()
 max_vol_252 = vol_df.rolling(window=252, min_periods=200).max()
 prev_max_close_252 = close_df.shift(1).rolling(window=252, min_periods=1).max()
-adr_20_df = ((high_df / low_df) - 1).rolling(window=20).mean() * 100
+
+# 🟢 THE ADR MATH SHOCK ABSORBER
+safe_low = low_df.replace(0, np.nan)
+raw_daily_range = (high_df / safe_low) - 1
+adr_20_df = raw_daily_range.replace([np.inf, -np.inf], np.nan).rolling(window=20, min_periods=5).mean() * 100
 
 base_rules = close_df > 40
 
@@ -130,7 +131,7 @@ tr1 = high_df - low_df
 tr2 = (high_df - close_df.shift(1)).abs()
 tr3 = (low_df - close_df.shift(1)).abs()
 tr_df = pd.DataFrame(np.maximum(tr1.values, np.maximum(tr2.values, tr3.values)), index=close_df.index, columns=close_df.columns)
-atr_14_df = tr_df.rolling(window=14).mean().replace(0, np.nan) 
+atr_14_df = tr_df.rolling(window=14, min_periods=5).mean().replace(0, np.nan) 
 
 weekly_close_df = close_df.resample('W-FRI').last()
 daily_sma_4_df = weekly_close_df.rolling(4).mean().reindex(close_df.index, method='ffill')
@@ -162,6 +163,7 @@ for ticker in tickers:
     cond1 = ema_10 > ema_30
 
     wk_range = weekly_df['High'] - weekly_df['Low']
+    wk_range = wk_range.replace(0, np.nan)
     wcr = ((weekly_df['Close'] - weekly_df['Low']) / wk_range) * 100
     cond2 = wcr >= 40
 
@@ -181,7 +183,6 @@ for ticker in tickers:
     if not trigger_dates.empty:
         pp_mask_df.loc[trigger_dates, ticker] = True
 
-# --- ASSIGN ALL SCANNERS ---
 scanner_conditions = {
     "70% up from low": close_df >= (1.7 * low_52w),
     "1 week strength": (close_df.pct_change(periods=5, fill_method=None) * 100) > 15,
@@ -249,7 +250,6 @@ for ticker in all_shortlisted:
                         dw4 = dist_w4_df.loc[latest_date_obj, ticker]
                         dw10 = dist_w10_df.loc[latest_date_obj, ticker]
 
-                        # 🟢 NICK DRENDEL SUPPORT GAP LOGIC
                         c_series = close_df.loc[:latest_date_obj, ticker].dropna().values
                         l_series = low_df.loc[:latest_date_obj, ticker].dropna().values
                         active_gaps = []
