@@ -125,8 +125,11 @@ for ticker in tickers:
         df['TR'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
         atr_14 = df['TR'].rolling(14).mean().iloc[-1]
         
-        daily_range = (df['High'] / df['Low']) - 1
-        adr_20 = daily_range.rolling(window=20).mean().iloc[-1] * 100
+        # 🟢 THE ADR MATH SHOCK ABSORBER
+        df['Safe_Low'] = df['Low'].replace(0, np.nan)
+        daily_range = (df['High'] / df['Safe_Low']) - 1
+        adr_20 = daily_range.replace([np.inf, -np.inf], np.nan).rolling(window=20, min_periods=5).mean().iloc[-1] * 100
+        
         avg_vol_20 = df['Volume'].rolling(window=20).mean().iloc[-1]
         rvol_20 = (df['Volume'].iloc[-1] / avg_vol_20) if avg_vol_20 > 0 else np.nan
 
@@ -144,7 +147,7 @@ for ticker in tickers:
         df['ema21'] = df['Close'].ewm(span=21, adjust=False).mean()
         df['ema50'] = df['Close'].ewm(span=50, adjust=False).mean()
    
-        # 🟢 GET WEEKLY OPEN AND CLOSE FOR CANDLE BODY LOGIC
+        # WEEKLY CANDLES
         weekly_df = df.resample('W-FRI').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
         
         if len(weekly_df) >= 10:
@@ -167,7 +170,7 @@ for ticker in tickers:
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
 
-        # NICK DRENDEL SUPPORT GAP LOGIC
+        # SUPPORT GAPS
         c_vals = df['Close'].values
         l_vals = df['Low'].values
         active_gaps = []
@@ -180,9 +183,9 @@ for ticker in tickers:
             for k in range(len(active_gaps)-1, -1, -1):
                 if curr_c < active_gaps[k][0]:
                     if curr_c <= active_gaps[k][1]:
-                        active_gaps.pop(k) # Gap Reclaimed
+                        active_gaps.pop(k) 
                     else:
-                        active_gaps[k][0] = curr_c # Gap Shrinks
+                        active_gaps[k][0] = curr_c 
             if len(active_gaps) > 20:
                 active_gaps.pop(0)
                 
@@ -198,7 +201,7 @@ for ticker in tickers:
         dist_sg = (close - nearest_sg_top) / atr_14 if pd.notna(atr_14) and atr_14 != 0 and pd.notna(nearest_sg_top) else np.nan
 
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
-        ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100 # Kept for Scanner Rule
+        ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100 
         
         # 🟢 CANDLE BODY PERCENTAGE LOGIC (Mon Open to Current Close)
         if len(weekly_df) >= 2:
