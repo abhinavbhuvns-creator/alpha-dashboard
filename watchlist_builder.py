@@ -211,7 +211,6 @@ for stock in all_unique_stocks:
         ema_50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
         ema_150 = df['Close'].ewm(span=150, adjust=False).mean().iloc[-1]
         
-        # 🟢 ISOLATE WEEKLY CANDLES FOR BODY MEASUREMENT
         weekly_df = df.resample('W-FRI').agg({'Open': 'first', 'Close': 'last'}).dropna()
         
         if len(weekly_df) >= 10:
@@ -226,7 +225,6 @@ for stock in all_unique_stocks:
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
 
-        # NICK DRENDEL SUPPORT GAP LOGIC
         c_vals = df['Close'].values
         l_vals = df['Low'].values
         active_gaps = []
@@ -258,9 +256,8 @@ for stock in all_unique_stocks:
         rupee_vol = df['Close'] * df['Volume']
         avg_rupee_vol_20 = (rupee_vol.rolling(window=20).mean().iloc[-1]) / 10000000
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
-        ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100 # Kept for scanner
+        ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100 
         
-        # 🟢 CANDLE BODY PERCENTAGE LOGIC (Mon Open to Current Close)
         if len(weekly_df) >= 2:
             ret_curr_wk_body = ((weekly_df['Close'].iloc[-1] / weekly_df['Open'].iloc[-1]) - 1) * 100
             ret_prev_wk_body = ((weekly_df['Close'].iloc[-2] / weekly_df['Open'].iloc[-2]) - 1) * 100
@@ -275,8 +272,11 @@ for stock in all_unique_stocks:
             ret_prev_2m = ((close_1m_ago / close_3m_ago) - 1) * 100
         else:
             ret_prev_2m = np.nan
-        daily_range = (df['High'] / df['Low']) - 1
-        adr_20 = daily_range.rolling(window=20).mean().iloc[-1] * 100
+            
+        # 🟢 THE ADR MATH SHOCK ABSORBER
+        df['Safe_Low'] = df['Low'].replace(0, np.nan)
+        daily_range = (df['High'] / df['Safe_Low']) - 1
+        adr_20 = daily_range.replace([np.inf, -np.inf], np.nan).rolling(window=20, min_periods=5).mean().iloc[-1] * 100
         
         tech_data[stock] = {
             "close": close, "ema_21": ema_21, "ema_50": ema_50, "ema_150": ema_150,
