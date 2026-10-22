@@ -118,7 +118,10 @@ for ticker in tickers:
 
         close = df['Close'].iloc[-1]
         high_52w = df['High'].tail(252).max() 
-        low_52w = df['Low'].tail(252).min() 
+        
+        # 🟢 FIX: 52-WEEK LOW SHOCK ABSORBER
+        safe_low_series = df['Low'].replace(0, np.nan)
+        low_52w = safe_low_series.tail(252).min() 
         
         df['tr1'] = df['High'] - df['Low']
         df['tr2'] = abs(df['High'] - df['Close'].shift(1))
