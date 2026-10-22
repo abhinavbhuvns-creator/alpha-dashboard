@@ -111,7 +111,9 @@ high_df.index = high_df.index.tz_localize(None)
 # ==========================================
 print("Crunching technical criteria, ATR Distances, and Weekly Pocket Pivots...")
 
-low_52w = low_df.rolling(window=252, min_periods=200).min()
+# 🟢 FIX: 52-WEEK LOW SHOCK ABSORBER
+safe_low = low_df.replace(0, np.nan)
+low_52w = safe_low.rolling(window=252, min_periods=200).min()
 max_high_252 = high_df.rolling(window=252, min_periods=200).max()
 
 avg_vol_50 = vol_df.rolling(window=50).mean()
@@ -119,7 +121,6 @@ max_vol_252 = vol_df.rolling(window=252, min_periods=200).max()
 prev_max_close_252 = close_df.shift(1).rolling(window=252, min_periods=1).max()
 
 # 🟢 THE ADR MATH SHOCK ABSORBER
-safe_low = low_df.replace(0, np.nan)
 raw_daily_range = (high_df / safe_low) - 1
 adr_20_df = raw_daily_range.replace([np.inf, -np.inf], np.nan).rolling(window=20, min_periods=5).mean() * 100
 
@@ -282,7 +283,6 @@ for ticker in all_shortlisted:
                         atr_val = atr_14_df.loc[latest_date_obj, ticker]
                         dsg = (final_c - nearest_sg_top) / atr_val if pd.notna(atr_val) and atr_val != 0 and pd.notna(nearest_sg_top) else np.nan
 
-                        # 🟢 ADDED 52 WEEK DISTANCE CALCS
                         latest_high = max_high_252.loc[latest_date_obj, ticker]
                         latest_low = low_52w.loc[latest_date_obj, ticker]
                         
