@@ -206,6 +206,13 @@ for stock in all_unique_stocks:
         df['TR'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
         atr_14 = df['TR'].rolling(14).mean().iloc[-1]
         close = df['Close'].iloc[-1]
+        
+        # 🟢 52 WEEK HIGHS/LOWS
+        high_52w = df['High'].max()
+        low_52w = df['Low'].min()
+        pct_off_high = ((close - high_52w) / high_52w) * 100 if pd.notna(high_52w) and high_52w != 0 else np.nan
+        pct_above_low = ((close - low_52w) / low_52w) * 100 if pd.notna(low_52w) and low_52w != 0 else np.nan
+
         ema_9 = df['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
         ema_21 = df['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
         ema_50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
@@ -284,7 +291,8 @@ for stock in all_unique_stocks:
             "ret_curr_wk_body": ret_curr_wk_body, "ret_prev_wk_body": ret_prev_wk_body, 
             "ret_1m": ret_1m, "ret_prev_2m": ret_prev_2m, "adr": adr_20,
             "dist_9": dist_9, "dist_21": dist_21, "dist_50": dist_50,
-            "dist_w4": dist_w4, "dist_w10": dist_w10, "dist_sg": dist_sg
+            "dist_w4": dist_w4, "dist_w10": dist_w10, "dist_sg": dist_sg,
+            "above_low": pct_above_low, "off_high": pct_off_high
         }
     except Exception as e: continue
 
@@ -294,7 +302,7 @@ for stock in all_unique_stocks:
 headers = [
     "Stock Symbol", "Ind Rank", "Industry Group", "ADR %", "Avg Rupee Vol (Cr)",
     "1 Day Return %", "1 Week Return %", "Curr Wk Body %", "Prev Wk Body %", "1 Month Return %", "Prev 2M Return (Ending 1M Ago) %",
-    "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)", "Supp Gap (ATR)"
+    "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)", "Supp Gap (ATR)", "% above 52W Low", "% off 52W High"
 ] + MS_COLS + scanners
 
 def format_row(stock, scan_dict):
@@ -317,7 +325,9 @@ def format_row(stock, scan_dict):
         round(td['dist_50'], 2) if pd.notna(td['dist_50']) else "",
         round(td['dist_w4'], 2) if pd.notna(td['dist_w4']) else "",
         round(td['dist_w10'], 2) if pd.notna(td['dist_w10']) else "",
-        round(td['dist_sg'], 2) if pd.notna(td['dist_sg']) else ""
+        round(td['dist_sg'], 2) if pd.notna(td['dist_sg']) else "",
+        round(td['above_low'], 2) if pd.notna(td['above_low']) else "",
+        round(td['off_high'], 2) if pd.notna(td['off_high']) else ""
     ]
     
     ms_data = ms_dict.get(stock, {})
