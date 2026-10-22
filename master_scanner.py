@@ -112,6 +112,8 @@ high_df.index = high_df.index.tz_localize(None)
 print("Crunching technical criteria, ATR Distances, and Weekly Pocket Pivots...")
 
 low_52w = low_df.rolling(window=252, min_periods=200).min()
+max_high_252 = high_df.rolling(window=252, min_periods=200).max()
+
 avg_vol_50 = vol_df.rolling(window=50).mean()
 max_vol_252 = vol_df.rolling(window=252, min_periods=200).max()
 prev_max_close_252 = close_df.shift(1).rolling(window=252, min_periods=1).max()
@@ -280,6 +282,13 @@ for ticker in all_shortlisted:
                         atr_val = atr_14_df.loc[latest_date_obj, ticker]
                         dsg = (final_c - nearest_sg_top) / atr_val if pd.notna(atr_val) and atr_val != 0 and pd.notna(nearest_sg_top) else np.nan
 
+                        # 🟢 ADDED 52 WEEK DISTANCE CALCS
+                        latest_high = max_high_252.loc[latest_date_obj, ticker]
+                        latest_low = low_52w.loc[latest_date_obj, ticker]
+                        
+                        pct_above_low = ((final_c - latest_low) / latest_low) * 100 if pd.notna(latest_low) and latest_low != 0 else np.nan
+                        pct_off_high = ((final_c - latest_high) / latest_high) * 100 if pd.notna(latest_high) and latest_high != 0 else np.nan
+
                         industry = industry_map.get(stock_name, "Unclassified")
                         
                         ms_data = ms_dict.get(stock_name, {})
@@ -297,7 +306,9 @@ for ticker in all_shortlisted:
                             round(d50, 2) if pd.notna(d50) else "N/A",
                             round(dw4, 2) if pd.notna(dw4) else "N/A",
                             round(dw10, 2) if pd.notna(dw10) else "N/A",
-                            round(dsg, 2) if pd.notna(dsg) else "N/A"
+                            round(dsg, 2) if pd.notna(dsg) else "N/A",
+                            round(pct_above_low, 2) if pd.notna(pct_above_low) else "N/A",
+                            round(pct_off_high, 2) if pd.notna(pct_off_high) else "N/A"
                         ] + ms_row)
     except Exception as e:
         continue
@@ -309,7 +320,7 @@ print("\nExporting all formatted data to Unified Google Sheet...")
 
 headers = [
     "Trigger Date", "Stock Symbol", "Industry Group", "Avg Rupee Vol (Cr)", "ADR %",
-    "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)", "Supp Gap (ATR)"
+    "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)", "Supp Gap (ATR)", "% above 52W Low", "% off 52W High"
 ] + MS_COLS
 
 def get_column_letter(col_idx):
