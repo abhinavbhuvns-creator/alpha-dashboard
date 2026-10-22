@@ -207,9 +207,11 @@ for stock in all_unique_stocks:
         atr_14 = df['TR'].rolling(14).mean().iloc[-1]
         close = df['Close'].iloc[-1]
         
-        # 🟢 52 WEEK HIGHS/LOWS
+        # 🟢 FIX: 52 WEEK HIGHS/LOWS SHOCK ABSORBER
         high_52w = df['High'].max()
-        low_52w = df['Low'].min()
+        safe_low_series = df['Low'].replace(0, np.nan)
+        low_52w = safe_low_series.min()
+        
         pct_off_high = ((close - high_52w) / high_52w) * 100 if pd.notna(high_52w) and high_52w != 0 else np.nan
         pct_above_low = ((close - low_52w) / low_52w) * 100 if pd.notna(low_52w) and low_52w != 0 else np.nan
 
@@ -399,3 +401,4 @@ write_to_sheet("universe", universe_output)
 write_to_sheet("watchlist", watchlist_output)
 write_to_sheet("watchlist one day", oneday_output)
 print("\nDashboard Creation Complete! All 3 tabs are ready in your Target Sheet.")
+```<FollowUp></FollowUp>
