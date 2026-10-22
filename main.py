@@ -118,6 +118,7 @@ for ticker in tickers:
 
         close = df['Close'].iloc[-1]
         high_52w = df['High'].tail(252).max() 
+        low_52w = df['Low'].tail(252).min() 
         
         df['tr1'] = df['High'] - df['Low']
         df['tr2'] = abs(df['High'] - df['Close'].shift(1))
@@ -203,7 +204,7 @@ for ticker in tickers:
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100 
         
-        # 🟢 CANDLE BODY PERCENTAGE LOGIC (Mon Open to Current Close)
+        # 🟢 CANDLE BODY PERCENTAGE LOGIC
         if len(weekly_df) >= 2:
             ret_curr_wk_body = ((weekly_df['Close'].iloc[-1] / weekly_df['Open'].iloc[-1]) - 1) * 100
             ret_prev_wk_body = ((weekly_df['Close'].iloc[-2] / weekly_df['Open'].iloc[-2]) - 1) * 100
@@ -215,7 +216,10 @@ for ticker in tickers:
         ret_3m = df['Close'].pct_change(periods=63).iloc[-1] * 100 if len(df) >= 64 else None
         ret_6m = df['Close'].pct_change(periods=126).iloc[-1] * 100 if len(df) >= 127 else None
         dist_ema21 = ((close - df['ema21'].iloc[-1]) / df['ema21'].iloc[-1]) * 100
+        
+        # 🟢 52 WEEK OFF/ABOVE METRICS
         dist_high = ((close - high_52w) / high_52w) * 100
+        dist_low = ((close - low_52w) / low_52w) * 100
 
         if len(df) >= 64:
             close_1m_ago = df['Close'].iloc[-22]
@@ -238,7 +242,8 @@ for ticker in tickers:
             "3 Month Return %": round(ret_3m, 2) if pd.notna(ret_3m) else "",
             "6 Month Return %": round(ret_6m, 2) if pd.notna(ret_6m) else "",
             "% Dist from 21 EMA": round(dist_ema21, 2) if pd.notna(dist_ema21) else "",
-            "% Dist from 52W High": round(dist_high, 2) if pd.notna(dist_high) else "",
+            "% above 52W Low": round(dist_low, 2) if pd.notna(dist_low) else "",
+            "% off 52W High": round(dist_high, 2) if pd.notna(dist_high) else "",
             "4 EMA": round(df['ema4'].iloc[-1], 2) if pd.notna(df['ema4'].iloc[-1]) else "",
             "6 EMA": round(df['ema6'].iloc[-1], 2) if pd.notna(df['ema6'].iloc[-1]) else "",
             "9 EMA": round(df['ema9'].iloc[-1], 2) if pd.notna(df['ema9'].iloc[-1]) else "",
