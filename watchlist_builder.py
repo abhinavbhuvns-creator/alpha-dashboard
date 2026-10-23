@@ -401,4 +401,4 @@ write_to_sheet("universe", universe_output)
 write_to_sheet("watchlist", watchlist_output)
 write_to_sheet("watchlist one day", oneday_output)
 print("\nDashboard Creation Complete! All 3 tabs are ready in your Target Sheet.")
-```<FollowUp></FollowUp>
+print("\nDashboard Creation Complete! All 3 tabs are ready in your Target Sheet.")
