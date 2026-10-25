@@ -25,7 +25,7 @@ spreadsheet = gc.open_by_url(SHEET_URL)
 TAB_NAME = "Corporate_Announcements"
 
 # ==========================================
-# 2. GET USER STOCK UNIVERSE
+# 2. GET USER STOCK UNIVERSE & INDUSTRIES
 # ==========================================
 print("Fetching approved stock universe from Master Sheet...")
 try:
@@ -144,20 +144,36 @@ df = pd.DataFrame(raw_data)
 filtered_announcements = []
 
 for _, row in df.iterrows():
-    symbol = str(row.get('symbol', '')).strip().upper()
-    desc = str(row.get('desc', ''))
-    subject = str(row.get('sm_name', ''))
+    row_dict = row.to_dict()
+    symbol = str(row_dict.get('symbol', '')).strip().upper()
+    desc = str(row_dict.get('desc', ''))
+    subject = str(row_dict.get('sm_name', ''))
     
-    # Date Fallback Logic
-    raw_date = str(row.get('anndate', '') or row.get('broadCastDate', '') or row.get('date', ''))
+    # 🟢 BULLETPROOF DATE FINDER
+    raw_date = ""
+    for k in ['anndate', 'broadcastdate', 'date', 'dateofannouncement']:
+        if row_dict.get(k) and str(row_dict[k]).strip() != "":
+            raw_date = str(row_dict[k])
+            break
     clean_date = raw_date.split(' ')[0] if raw_date else ""
     
-    # PDF Link Formatting
-    file_path = row.get('attchmntText', '') or row.get('attchmntFile', '')
-    if file_path:
-        link = f"https://nsearchives.nseindia.com{file_path}" if not file_path.startswith('http') else file_path
-    else:
-        link = ""
+    # 🟢 BULLETPROOF PDF LINK FINDER
+    file_path = ""
+    for k in ['attchmnttext', 'attchmntfile', 'attachment']:
+        for actual_k in row_dict.keys():
+            if k == actual_k.lower() and row_dict[actual_k]:
+                file_path = str(row_dict[actual_k]).strip()
+                break
+        if file_path: break
+
+    link = ""
+    if file_path and len(file_path) > 3:
+        if file_path.startswith('http'):
+            link = file_path
+        elif file_path.startswith('/'):
+            link = f"https://nsearchives.nseindia.com{file_path}"
+        else:
+            link = f"https://nsearchives.nseindia.com/{file_path}"
 
     if symbol in approved_symbols:
         category = categorize_announcement(subject, desc)
@@ -180,6 +196,8 @@ if not filtered_announcements:
     raise SystemExit(0)
 
 df_new = pd.DataFrame(filtered_announcements)
+desired_columns = ["Date", "Industry", "Category", "Company Name", "NSE Code", "Announcement", "Summary", "PDF Link"]
+df_new = df_new[desired_columns]
 
 # ==========================================
 # 7. APPEND TO GOOGLE SHEETS
@@ -188,6 +206,11 @@ print(f"Appending {len(df_new)} categorized announcements to Google Sheets...")
 
 if not is_empty:
     existing_df = pd.DataFrame(existing_data[1:], columns=existing_data[0])
+    # Prevent old columns from misaligning the data
+    for col in desired_columns:
+        if col not in existing_df.columns:
+            existing_df[col] = ""
+    existing_df = existing_df[desired_columns]
     df_final = pd.concat([df_new, existing_df]).drop_duplicates(subset=['Date', 'NSE Code', 'Category', 'Announcement'])
 else:
     df_final = df_new
@@ -199,6 +222,7 @@ df_final = df_final.sort_values(by='Date', ascending=False)
 df_final['Date'] = df_final['Date'].dt.strftime('%d-%b-%Y')
 
 sheet_output = [df_final.columns.values.tolist()] + df_final.fillna("").values.tolist()
+worksheet.clear() # Wipe clean to prevent ghost columns
 worksheet.update(values=sheet_output, range_name='A1', value_input_option='USER_ENTERED')
 worksheet.freeze(rows=1)
 worksheet.format('A1:H1', {
