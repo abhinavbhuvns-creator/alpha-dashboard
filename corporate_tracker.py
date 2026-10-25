@@ -2,6 +2,7 @@ import os
 import json
 import time
 import requests
+import urllib.parse
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
@@ -53,14 +54,21 @@ def categorize_announcement(subject, desc):
     text = (str(subject) + " " + str(desc)).lower()
     
     # 🟢 PRIORITY 1: Legal & Court (Catches Court Orders before Business Orders)
-    if any(kw in text for kw in ["court", "tribunal", "litigation", "nclt", "sebi", "cbi", "ed ", "income tax", "penalty", "show cause", "default", "fraud", "forensic", "summons", "writ petition", "order passed", "order dated", "hon'ble", "supreme court", "high court"]):
+    # Replaced dangerous short acronyms with full phrasing to prevent false positives
+    legal_keywords = [
+        "court", "tribunal", "litigation", "nclt", "sebi", "central bureau of investigation", 
+        "enforcement directorate", "income tax", "penalty", "show cause", "default", "fraud", 
+        "forensic", "summons", "writ petition", "order passed", "order dated", "hon'ble", 
+        "supreme court", "high court"
+    ]
+    if any(kw in text for kw in legal_keywords):
         return "Legal / Red Flags"
         
     # 🟢 PRIORITY 2: Core Business Catalysts
     if any(kw in text for kw in ["financial result", "audited", "unaudited", "earnings"]):
         return "Financial Results"
         
-    if any(kw in text for kw in ["order", "award", "contract", "letter of intent", "loi", "bagged"]):
+    if any(kw in text for kw in ["order", "award", "contract", "letter of intent", "bagged", "bagging"]):
         return "Order Wins"
         
     if any(kw in text for kw in ["capex", "capacity", "expansion", "commissioning", "new plant", "new unit", "commercial production", "new venture", "sets up"]):
@@ -100,7 +108,7 @@ def categorize_announcement(subject, desc):
     return "Other Important Announcements"
 
 # ==========================================
-# 4. DETERMINE FETCH RANGES (6-MONTH BACKFILL LOGIC)
+# 4. DETERMINE FETCH RANGES & INITIALIZE SESSION
 # ==========================================
 try:
     worksheet = spreadsheet.worksheet(TAB_NAME)
@@ -111,23 +119,6 @@ except gspread.exceptions.WorksheetNotFound:
     existing_data = []
     is_empty = True
 
-fetch_ranges = []
-if is_empty:
-    print("Sheet is empty. Initiating 6-month historical backfill (bypassing NSE limits via 30-day chunks)...")
-    end_dt = datetime.today()
-    for _ in range(6):
-        start_dt = end_dt - timedelta(days=30)
-        fetch_ranges.append((start_dt.strftime("%d-%m-%Y"), end_dt.strftime("%d-%m-%Y")))
-        end_dt = start_dt - timedelta(days=1)
-else:
-    print("Sheet has data. Fetching recent updates for the last 7 days...")
-    end_dt = datetime.today()
-    start_dt = end_dt - timedelta(days=7)
-    fetch_ranges.append((start_dt.strftime("%d-%m-%Y"), end_dt.strftime("%d-%m-%Y")))
-
-# ==========================================
-# 5. FETCH LIVE NSE ANNOUNCEMENTS
-# ==========================================
 print("Connecting to NSE API...")
 session = requests.Session()
 headers = {
@@ -135,27 +126,60 @@ headers = {
     'Accept': '*/*',
     'Accept-Language': 'en-US,en;q=0.9'
 }
-
 session.get("https://www.nseindia.com", headers=headers, timeout=10)
 time.sleep(2)
 
 raw_data = []
-for start_str, end_str in fetch_ranges:
-    api_url = f"https://www.nseindia.com/api/corporate-announcements?index=equities&from_date={start_str}&to_date={end_str}"
-    print(f" -> Fetching timeframe: {start_str} to {end_str}")
+
+# ==========================================
+# 5. SMART FETCHING LOGIC (DEEP BACKFILL VS DAILY)
+# ==========================================
+if is_empty:
+    print(f"Sheet is empty! Initiating 6-month Deep Backfill for {len(approved_symbols)} stocks...")
+    print("This will take 5-10 minutes. Fetching symbol by symbol to bypass NSE time limits.")
+    
+    for idx, sym in enumerate(approved_symbols):
+        # 🟢 ANTI-BLOCK MEASURE: Refresh session every 50 stocks
+        if idx > 0 and idx % 50 == 0:
+            print(f" -> Rotated session at {idx} stocks to prevent IP ban...")
+            session.close()
+            time.sleep(5)
+            session = requests.Session()
+            session.get("https://www.nseindia.com", headers=headers, timeout=10)
+            time.sleep(2)
+            
+        safe_sym = urllib.parse.quote(sym)
+        api_url = f"https://www.nseindia.com/api/corporate-announcements?index=equities&symbol={safe_sym}"
+        
+        for attempt in range(3):
+            try:
+                response = session.get(api_url, headers=headers, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    raw_data.extend(data)
+                    break
+            except Exception:
+                pass
+            time.sleep(2)
+            
+        time.sleep(1) # Base delay to mimic human behavior
+        
+else:
+    print("Sheet has data. Fetching fast daily updates for the last 3 days...")
+    end_dt = datetime.today()
+    start_dt = end_dt - timedelta(days=3)
+    
+    api_url = f"https://www.nseindia.com/api/corporate-announcements?index=equities&from_date={start_dt.strftime('%d-%m-%Y')}&to_date={end_dt.strftime('%d-%m-%Y')}"
     
     for attempt in range(3):
         try:
             response = session.get(api_url, headers=headers, timeout=15)
             if response.status_code == 200:
-                chunk_data = response.json()
-                raw_data.extend(chunk_data)
-                print(f"    ✅ Got {len(chunk_data)} records.")
+                raw_data.extend(response.json())
                 break
-        except Exception as e:
+        except Exception:
             pass
         time.sleep(3)
-    time.sleep(2) 
 
 if not raw_data:
     print("No data fetched from NSE. Try again later.")
@@ -169,15 +193,18 @@ filtered_announcements = []
 
 for row in raw_data:
     
+    # Lowercase all keys to avoid NSE case-change bugs
     row_lower = {str(k).lower(): v for k, v in row.items()}
     symbol = str(row_lower.get('symbol', '')).strip().upper()
     
     if symbol in approved_symbols:
         
+        # 🟢 BULLETPROOF DATE FINDER
         raw_date = str(row_lower.get('an_dt', '') or row_lower.get('broadcastdate', '') or row_lower.get('date', '')).strip()
         if raw_date.lower() in ['none', 'nan', 'null']: raw_date = ""
         clean_date = raw_date.split(' ')[0] if raw_date else ""
         
+        # 🟢 BULLETPROOF PDF LINK FINDER
         file_path = str(row_lower.get('attchmntfile', '')).strip()
         if file_path.lower() in ['none', 'nan', 'null']: file_path = ""
         
@@ -190,6 +217,7 @@ for row in raw_data:
             else:
                 link = f"https://nsearchives.nseindia.com/{file_path}"
 
+        # 🟢 EXACT TEXT EXTRACTION
         subject = str(row_lower.get('desc', '')).strip()
         if subject.lower() in ['none', 'nan', 'null']: subject = ""
         
@@ -200,6 +228,7 @@ for row in raw_data:
 
         category = categorize_announcement(subject, detailed_text)
         
+        # Drop meaningless daily noise unless it caught a specific bucket
         if category != "Other Important Announcements" or ("update" not in detailed_text.lower() and "loss of share" not in detailed_text.lower()):
             filtered_announcements.append({
                 "Date": clean_date,
@@ -226,6 +255,7 @@ print(f"Appending {len(df_new)} categorized announcements to Google Sheets...")
 
 if not is_empty:
     existing_df = pd.DataFrame(existing_data[1:], columns=existing_data[0])
+    # Add any missing columns to prevent misalignment
     for col in desired_columns:
         if col not in existing_df.columns:
             existing_df[col] = ""
@@ -234,6 +264,7 @@ if not is_empty:
 else:
     df_final = df_new
 
+# Keep history clean and sorted
 df_final = df_final.head(5000)
 df_final['Date'] = pd.to_datetime(df_final['Date'], format='mixed', dayfirst=True, errors='coerce')
 df_final = df_final.sort_values(by='Date', ascending=False)
