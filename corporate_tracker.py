@@ -153,13 +153,13 @@ for row in raw_data:
     
     if symbol in approved_symbols:
         
-        # 🟢 BULLETPROOF DATE FINDER
-        raw_date = str(row_lower.get('anndate', '') or row_lower.get('broadcastdate', '') or row_lower.get('date', '')).strip()
+        # 🟢 THE REAL DATE KEY
+        raw_date = str(row_lower.get('an_dt', '') or row_lower.get('sort_date', '')).strip()
         if raw_date.lower() in ['none', 'nan', 'null']: raw_date = ""
         clean_date = raw_date.split(' ')[0] if raw_date else ""
         
-        # 🟢 BULLETPROOF PDF LINK FINDER
-        file_path = str(row_lower.get('attchmnttext', '') or row_lower.get('attchmntfile', '') or row_lower.get('attachment', '')).strip()
+        # 🟢 THE REAL PDF LINK KEY
+        file_path = str(row_lower.get('attchmntfile', '')).strip()
         if file_path.lower() in ['none', 'nan', 'null']: file_path = ""
         
         link = ""
@@ -171,20 +171,20 @@ for row in raw_data:
             else:
                 link = f"https://nsearchives.nseindia.com/{file_path}"
 
-        # 🟢 EXTRACT DETAILED DESCRIPTION
-        subject = str(row_lower.get('sm_name', '')).strip()
+        # 🟢 THE REAL ANNOUNCEMENT TEXT KEY
+        subject = str(row_lower.get('desc', '')).strip()
         if subject.lower() in ['none', 'nan', 'null']: subject = ""
         
-        desc = str(row_lower.get('desc', '')).strip()
-        if desc.lower() in ['none', 'nan', 'null']: desc = ""
+        detailed_text = str(row_lower.get('attchmnttext', '')).strip()
+        if detailed_text.lower() in ['none', 'nan', 'null']: detailed_text = ""
         
         # If the detailed description exists and is longer than a generic subject, use it.
-        final_announcement = desc if len(desc) > len(subject) else subject
+        final_announcement = detailed_text if len(detailed_text) > len(subject) else subject
 
-        category = categorize_announcement(subject, desc)
+        category = categorize_announcement(subject, detailed_text)
         
         # Drop meaningless daily noise unless it triggered a specific catalyst bucket
-        if category != "Other Important Announcements" or ("update" not in desc.lower() and "loss of share" not in desc.lower()):
+        if category != "Other Important Announcements" or ("update" not in detailed_text.lower() and "loss of share" not in detailed_text.lower()):
             filtered_announcements.append({
                 "Date": clean_date,
                 "Industry": universe_dict[symbol]['Industry'],
