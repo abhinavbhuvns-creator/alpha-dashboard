@@ -46,7 +46,7 @@ except Exception as e:
 approved_symbols = list(universe_dict.keys())
 
 # ==========================================
-# 3. ADVANCED COMPOUND PHRASE CATEGORIZATION
+# 3. ADVANCED COMPOUND & HYBRID CATEGORIZATION
 # ==========================================
 def categorize_announcement(subject, desc):
     text = (str(subject) + " " + str(desc)).lower()
@@ -55,26 +55,32 @@ def categorize_announcement(subject, desc):
     if any(kw in text for kw in ["significant movement in price", "significant increase in volume", "clarification on price movement"]):
         return "Exchange Clarification"
 
-    # 🟢 PRIORITY 1: Legal & Court (Full phrasing to avoid false positives)
+    # 🟢 PRIORITY 1: Legal & Court (Full phrasing)
     legal_keywords = [
         "court", "tribunal", "litigation", "nclt", "central bureau of investigation", 
         "enforcement directorate", "income tax", "penalty", "show cause", "default", "fraud", 
-        "forensic", "summons", "writ petition", "order passed", "orders passed", "order dated", 
+        "forensic", "summons", "writ petition", "orders passed", "order dated", 
         "hon'ble", "supreme court", "high court", "order in favour", "order-in-original"
     ]
     if any(kw in text for kw in legal_keywords):
         return "Legal / Red Flags"
         
-    # 🟢 PRIORITY 2: Core Business Catalysts (Compound Phrases ONLY)
+    # 🟢 PRIORITY 2: Core Business Catalysts
     if any(kw in text for kw in ["financial result", "audited", "unaudited", "earnings"]):
         return "Financial Results"
+
+    if any(kw in text for kw in ["new product", "product launch", "commercial launch"]):
+        return "New Product Launches"
         
+    # TEXT ERASURE: Remove boilerplate traps so the standalone word "order" is safe to use
+    clean_text_for_orders = text.replace("in order to", "").replace("order passed", "").replace("order dated", "").replace("court order", "").replace("order-in-original", "")
+    
     order_keywords = [
-        "work order", "purchase order", "bagged an order", "received an order", 
-        "receipt of order", "commercial order", "epc contract", "letter of intent", 
-        "letter of award", "awarded a contract", "awarded the project", "bagged", "bagging"
+        "order", "orders", "contract", "contracts", "bagged", "bagging", 
+        "secured", "secures", "winning", "wins", "awarded", "awarding", 
+        "letter of award", "loi", "letter of intent"
     ]
-    if any(kw in text for kw in order_keywords):
+    if any(kw in clean_text_for_orders for kw in order_keywords):
         return "Order Wins"
         
     if any(kw in text for kw in ["capex", "capacity", "expansion", "commissioning", "new plant", "new unit", "commercial production", "new venture", "sets up"]):
@@ -207,7 +213,6 @@ for row in raw_data:
 
         category = categorize_announcement(subject, detailed_text)
         
-        # Drop noise unless it caught a specific bucket
         if category != "Other Important Announcements" or ("update" not in detailed_text.lower() and "loss of share" not in detailed_text.lower()):
             filtered_announcements.append({
                 "Date": clean_date,
@@ -230,18 +235,13 @@ df_new = df_new[desired_columns]
 # 7. MERGE, DROP DUPLICATES, AND APPEND
 # ==========================================
 print("Merging with historical data and preventing duplicates...")
-# Concat new data ON TOP of old data. Old data is perfectly preserved.
 df_final = pd.concat([df_new, existing_df])
-
-# Drop identical announcements so they don't print twice
 df_final = df_final.drop_duplicates(subset=['Date', 'NSE Code', 'Category', 'Announcement'])
 
-# Sort by Date
 df_final['Date_Sort'] = pd.to_datetime(df_final['Date'], format='mixed', dayfirst=True, errors='coerce')
 df_final = df_final.sort_values(by='Date_Sort', ascending=False).drop(columns=['Date_Sort'])
 df_final['Date'] = pd.to_datetime(df_final['Date'], format='mixed', dayfirst=True, errors='coerce').dt.strftime('%d-%b-%Y')
 
-# Limit history to 5,000 rows to keep Google Sheets fast
 df_final = df_final.head(5000)
 
 print(f"Writing {len(df_final)} total records to Google Sheets...")
