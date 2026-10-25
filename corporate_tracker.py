@@ -25,7 +25,7 @@ spreadsheet = gc.open_by_url(SHEET_URL)
 TAB_NAME = "Corporate_Announcements"
 
 # ==========================================
-# 2. GET USER STOCK UNIVERSE & INDUSTRIES
+# 2. GET USER STOCK UNIVERSE
 # ==========================================
 print("Fetching approved stock universe from Master Sheet...")
 try:
@@ -80,7 +80,7 @@ try:
     existing_data = worksheet.get_all_values()
     is_empty = len(existing_data) <= 1
 except gspread.exceptions.WorksheetNotFound:
-    worksheet = spreadsheet.add_worksheet(title=TAB_NAME, rows="5000", cols="8")
+    worksheet = spreadsheet.add_worksheet(title=TAB_NAME, rows="5000", cols="7")
     existing_data = []
     is_empty = True
 
@@ -125,8 +125,6 @@ for start_str, end_str in fetch_ranges:
                 raw_data.extend(chunk_data)
                 print(f"    ✅ Got {len(chunk_data)} records.")
                 break
-            else:
-                print(f"    ⚠️ Status {response.status_code}. Retrying...")
         except Exception as e:
             pass
         time.sleep(3)
@@ -139,46 +137,45 @@ if not raw_data:
 # ==========================================
 # 6. FILTER & CATEGORIZE DATA
 # ==========================================
-print("Filtering against Master Universe and separating Summary column...")
-df = pd.DataFrame(raw_data)
+print("Filtering against Master Universe and building announcements...")
 filtered_announcements = []
 
-for _, row in df.iterrows():
-    row_dict = row.to_dict()
-    symbol = str(row_dict.get('symbol', '')).strip().upper()
-    desc = str(row_dict.get('desc', ''))
-    subject = str(row_dict.get('sm_name', ''))
+for row in raw_data:
+    # Force all keys to lowercase to bypass the NSE API case-sensitivity bugs
+    row_lower = {str(k).lower(): v for k, v in row.items()}
     
-    # 🟢 BULLETPROOF DATE FINDER
-    raw_date = ""
-    for k in ['anndate', 'broadcastdate', 'date', 'dateofannouncement']:
-        if row_dict.get(k) and str(row_dict[k]).strip() != "":
-            raw_date = str(row_dict[k])
-            break
-    clean_date = raw_date.split(' ')[0] if raw_date else ""
+    symbol = str(row_lower.get('symbol', '')).strip().upper()
     
-    # 🟢 BULLETPROOF PDF LINK FINDER
-    file_path = ""
-    for k in ['attchmnttext', 'attchmntfile', 'attachment']:
-        for actual_k in row_dict.keys():
-            if k == actual_k.lower() and row_dict[actual_k]:
-                file_path = str(row_dict[actual_k]).strip()
-                break
-        if file_path: break
-
-    link = ""
-    if file_path and len(file_path) > 3:
-        if file_path.startswith('http'):
-            link = file_path
-        elif file_path.startswith('/'):
-            link = f"https://nsearchives.nseindia.com{file_path}"
-        else:
-            link = f"https://nsearchives.nseindia.com/{file_path}"
-
     if symbol in approved_symbols:
+        # 🟢 BULLETPROOF DATE FINDER
+        raw_date = str(row_lower.get('anndate', '') or row_lower.get('broadcastdate', '') or row_lower.get('date', ''))
+        clean_date = raw_date.split(' ')[0] if raw_date else ""
+        
+        # 🟢 BULLETPROOF PDF LINK FINDER
+        file_path = str(row_lower.get('attchmnttext', '') or row_lower.get('attchmntfile', '') or row_lower.get('attachment', '')).strip()
+        link = ""
+        if file_path and len(file_path) > 3:
+            if file_path.startswith('http'):
+                link = file_path
+            elif file_path.startswith('/'):
+                link = f"https://nsearchives.nseindia.com{file_path}"
+            else:
+                link = f"https://nsearchives.nseindia.com/{file_path}"
+
+        subject = str(row_lower.get('sm_name', '')).strip()
+        desc = str(row_lower.get('desc', '')).strip()
+        
+        # Smart Text Combiner: Merges Subject & Desc without duplicating text
+        if subject.lower() in desc.lower() or not subject:
+            final_announcement = desc
+        elif desc.lower() in subject.lower() or not desc:
+            final_announcement = subject
+        else:
+            final_announcement = f"{subject} - {desc}"
+
         category = categorize_announcement(subject, desc)
         
-        # Drop meaningless daily noise
+        # Drop meaningless daily noise unless it triggered a specific catalyst bucket
         if category != "Other Important Announcements" or ("update" not in desc.lower() and "loss of share" not in desc.lower()):
             filtered_announcements.append({
                 "Date": clean_date,
@@ -186,8 +183,7 @@ for _, row in df.iterrows():
                 "Category": category,
                 "Company Name": universe_dict[symbol]['Company Name'],
                 "NSE Code": symbol,
-                "Announcement": subject,
-                "Summary": desc,
+                "Announcement": final_announcement,
                 "PDF Link": link
             })
 
@@ -196,7 +192,7 @@ if not filtered_announcements:
     raise SystemExit(0)
 
 df_new = pd.DataFrame(filtered_announcements)
-desired_columns = ["Date", "Industry", "Category", "Company Name", "NSE Code", "Announcement", "Summary", "PDF Link"]
+desired_columns = ["Date", "Industry", "Category", "Company Name", "NSE Code", "Announcement", "PDF Link"]
 df_new = df_new[desired_columns]
 
 # ==========================================
@@ -206,7 +202,7 @@ print(f"Appending {len(df_new)} categorized announcements to Google Sheets...")
 
 if not is_empty:
     existing_df = pd.DataFrame(existing_data[1:], columns=existing_data[0])
-    # Prevent old columns from misaligning the data
+    # Ensure alignment
     for col in desired_columns:
         if col not in existing_df.columns:
             existing_df[col] = ""
@@ -225,9 +221,10 @@ sheet_output = [df_final.columns.values.tolist()] + df_final.fillna("").values.t
 worksheet.clear() # Wipe clean to prevent ghost columns
 worksheet.update(values=sheet_output, range_name='A1', value_input_option='USER_ENTERED')
 worksheet.freeze(rows=1)
-worksheet.format('A1:H1', {
+worksheet.format('A1:G1', {
     "backgroundColor": {"red": 0.1, "green": 0.2, "blue": 0.4},
     "textFormat": {"foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}, "bold": True}
 })
 
 print("✅ Corporate Announcements Database successfully updated!")
+```<FollowUp></FollowUp>
