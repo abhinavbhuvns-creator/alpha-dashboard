@@ -47,32 +47,56 @@ except Exception as e:
 approved_symbols = list(universe_dict.keys())
 
 # ==========================================
-# 3. ADVANCED CATEGORIZATION ENGINE
+# 3. ADVANCED STRICT-HIERARCHY CATEGORIZATION
 # ==========================================
 def categorize_announcement(subject, desc):
     text = (str(subject) + " " + str(desc)).lower()
     
-    # Categories mapped to match the custom dashboard requirements
-    categories = {
-        "Order Wins": ["order", "award", "contract", "letter of intent", "loi"],
-        "Capacity Expansion or New Ventures": ["capex", "capacity", "expansion", "commissioning", "new plant", "new unit", "commercial production", "new venture", "sets up"],
-        "Fund Raising": ["fund raising", "preferential issue", "qip", "rights issue"],
-        "Acquisitions": ["acquisition", "takeover", "merger", "amalgamation", "stake sale", "buyout"],
-        "Credit Rating": ["credit rating", "crisil", "icra", "care", "fitch", "rating downgrade", "rating upgrade"],
-        "Corporate Action": ["bonus", "split", "sub-division", "allotment", "buyback"],
-        "Concall / Analyst Meet": ["concall", "analyst meet", "earnings call", "investor presentation", "institutional investor", "transcript", "audio recording"],
-        "Financial Results": ["financial result", "audited", "unaudited", "earnings"],
-        "Board Meeting": ["board meeting"],
-        "Appointments / Resignations": ["appointment", "resignation", "cessation", "change in director", "change in management", "kmp"],
-        "Shareholding": ["shareholding", "pledge", "promoter", "block deal"],
-        "Dividend": ["dividend", "record date"],
-        "Annual Report": ["annual report", "agm", "egm", "annual general meeting"],
-        "Legal / Red Flags": ["default", "penalty", "show cause", "sebi", "cbi", "ed ", "income tax", "fraud", "resignation of auditor", "nclt", "bankruptcy", "forensic"]
-    }
-    
-    for cat, keywords in categories.items():
-        if any(kw in text for kw in keywords):
-            return cat
+    # 🟢 PRIORITY 1: Legal & Court (Catches Court Orders before Business Orders)
+    if any(kw in text for kw in ["court", "tribunal", "litigation", "nclt", "sebi", "cbi", "ed ", "income tax", "penalty", "show cause", "default", "fraud", "forensic", "summons", "writ petition", "order passed", "order dated", "hon'ble", "supreme court", "high court"]):
+        return "Legal / Red Flags"
+        
+    # 🟢 PRIORITY 2: Core Business Catalysts
+    if any(kw in text for kw in ["financial result", "audited", "unaudited", "earnings"]):
+        return "Financial Results"
+        
+    if any(kw in text for kw in ["order", "award", "contract", "letter of intent", "loi", "bagged"]):
+        return "Order Wins"
+        
+    if any(kw in text for kw in ["capex", "capacity", "expansion", "commissioning", "new plant", "new unit", "commercial production", "new venture", "sets up"]):
+        return "Capacity Expansion or New Ventures"
+        
+    if any(kw in text for kw in ["fund raising", "preferential issue", "qip", "rights issue", "private placement"]):
+        return "Fund Raising"
+        
+    if any(kw in text for kw in ["acquisition", "takeover", "merger", "amalgamation", "stake sale", "buyout"]):
+        return "Acquisitions"
+
+    # 🟢 PRIORITY 3: Standard Corporate Actions & Updates
+    if any(kw in text for kw in ["concall", "analyst meet", "earnings call", "investor presentation", "institutional investor", "transcript", "audio recording"]):
+        return "Concall / Analyst Meet"
+        
+    if any(kw in text for kw in ["credit rating", "crisil", "icra", "care", "fitch", "rating downgrade", "rating upgrade"]):
+        return "Credit Rating"
+        
+    if any(kw in text for kw in ["bonus", "split", "sub-division", "allotment", "buyback"]):
+        return "Corporate Action"
+        
+    if any(kw in text for kw in ["dividend", "record date"]):
+        return "Dividend"
+        
+    if any(kw in text for kw in ["shareholding", "pledge", "promoter", "block deal"]):
+        return "Shareholding"
+        
+    if any(kw in text for kw in ["appointment", "resignation", "cessation", "change in director", "change in management", "kmp"]):
+        return "Appointments / Resignations"
+        
+    if any(kw in text for kw in ["board meeting"]):
+        return "Board Meeting"
+        
+    if any(kw in text for kw in ["annual report", "agm", "egm", "annual general meeting"]):
+        return "Annual Report"
+
     return "Other Important Announcements"
 
 # ==========================================
@@ -143,22 +167,17 @@ if not raw_data:
 print("Filtering against Master Universe and extracting detailed announcements...")
 filtered_announcements = []
 
-# Iterating RAW JSON to bypass Pandas NaN corruption on empty dates
 for row in raw_data:
     
-    # Force all API keys to lowercase to bypass the NSE capitalization inconsistencies
     row_lower = {str(k).lower(): v for k, v in row.items()}
-    
     symbol = str(row_lower.get('symbol', '')).strip().upper()
     
     if symbol in approved_symbols:
         
-        # 🟢 THE REAL DATE KEY
-        raw_date = str(row_lower.get('an_dt', '') or row_lower.get('sort_date', '')).strip()
+        raw_date = str(row_lower.get('an_dt', '') or row_lower.get('broadcastdate', '') or row_lower.get('date', '')).strip()
         if raw_date.lower() in ['none', 'nan', 'null']: raw_date = ""
         clean_date = raw_date.split(' ')[0] if raw_date else ""
         
-        # 🟢 THE REAL PDF LINK KEY
         file_path = str(row_lower.get('attchmntfile', '')).strip()
         if file_path.lower() in ['none', 'nan', 'null']: file_path = ""
         
@@ -171,19 +190,16 @@ for row in raw_data:
             else:
                 link = f"https://nsearchives.nseindia.com/{file_path}"
 
-        # 🟢 THE REAL ANNOUNCEMENT TEXT KEY
         subject = str(row_lower.get('desc', '')).strip()
         if subject.lower() in ['none', 'nan', 'null']: subject = ""
         
         detailed_text = str(row_lower.get('attchmnttext', '')).strip()
         if detailed_text.lower() in ['none', 'nan', 'null']: detailed_text = ""
         
-        # If the detailed description exists and is longer than a generic subject, use it.
         final_announcement = detailed_text if len(detailed_text) > len(subject) else subject
 
         category = categorize_announcement(subject, detailed_text)
         
-        # Drop meaningless daily noise unless it triggered a specific catalyst bucket
         if category != "Other Important Announcements" or ("update" not in detailed_text.lower() and "loss of share" not in detailed_text.lower()):
             filtered_announcements.append({
                 "Date": clean_date,
@@ -210,7 +226,6 @@ print(f"Appending {len(df_new)} categorized announcements to Google Sheets...")
 
 if not is_empty:
     existing_df = pd.DataFrame(existing_data[1:], columns=existing_data[0])
-    # Protect against ghost columns in existing sheets
     for col in desired_columns:
         if col not in existing_df.columns:
             existing_df[col] = ""
@@ -219,7 +234,6 @@ if not is_empty:
 else:
     df_final = df_new
 
-# Keep history clean and sorted
 df_final = df_final.head(5000)
 df_final['Date'] = pd.to_datetime(df_final['Date'], format='mixed', dayfirst=True, errors='coerce')
 df_final = df_final.sort_values(by='Date', ascending=False)
