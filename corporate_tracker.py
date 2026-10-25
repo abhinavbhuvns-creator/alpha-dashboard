@@ -25,7 +25,7 @@ spreadsheet = gc.open_by_url(SHEET_URL)
 TAB_NAME = "Corporate_Announcements"
 
 # ==========================================
-# 2. GET USER STOCK UNIVERSE
+# 2. GET USER STOCK UNIVERSE & INDUSTRIES
 # ==========================================
 print("Fetching approved stock universe from Master Sheet...")
 try:
@@ -51,19 +51,22 @@ approved_symbols = list(universe_dict.keys())
 # ==========================================
 def categorize_announcement(subject, desc):
     text = (str(subject) + " " + str(desc)).lower()
+    
+    # Categories mapped to match the custom dashboard requirements
     categories = {
         "Order Wins": ["order", "award", "contract", "letter of intent", "loi"],
-        "Capex / Expansions": ["capex", "capacity", "expansion", "commissioning", "new plant", "new unit", "commercial production"],
+        "Capacity Expansion or New Ventures": ["capex", "capacity", "expansion", "commissioning", "new plant", "new unit", "commercial production", "new venture", "sets up"],
+        "Fund Raising": ["fund raising", "preferential issue", "qip", "rights issue"],
+        "Acquisitions": ["acquisition", "takeover", "merger", "amalgamation", "stake sale", "buyout"],
         "Credit Rating": ["credit rating", "crisil", "icra", "care", "fitch", "rating downgrade", "rating upgrade"],
-        "Mergers & Acquisitions": ["acquisition", "takeover", "merger", "amalgamation", "stake sale", "buyout"],
-        "Corporate Action": ["bonus", "split", "sub-division", "allotment", "rights issue", "buyback"],
+        "Corporate Action": ["bonus", "split", "sub-division", "allotment", "buyback"],
         "Concall / Analyst Meet": ["concall", "analyst meet", "earnings call", "investor presentation", "institutional investor", "transcript", "audio recording"],
         "Financial Results": ["financial result", "audited", "unaudited", "earnings"],
         "Board Meeting": ["board meeting"],
         "Appointments / Resignations": ["appointment", "resignation", "cessation", "change in director", "change in management", "kmp"],
         "Shareholding": ["shareholding", "pledge", "promoter", "block deal"],
         "Dividend": ["dividend", "record date"],
-        "Annual Report / AGM": ["annual report", "agm", "egm", "annual general meeting"],
+        "Annual Report": ["annual report", "agm", "egm", "annual general meeting"],
         "Legal / Red Flags": ["default", "penalty", "show cause", "sebi", "cbi", "ed ", "income tax", "fraud", "resignation of auditor", "nclt", "bankruptcy", "forensic"]
     }
     
@@ -137,22 +140,28 @@ if not raw_data:
 # ==========================================
 # 6. FILTER & CATEGORIZE DATA
 # ==========================================
-print("Filtering against Master Universe and building announcements...")
+print("Filtering against Master Universe and extracting detailed announcements...")
 filtered_announcements = []
 
+# Iterating RAW JSON to bypass Pandas NaN corruption on empty dates
 for row in raw_data:
-    # Force all keys to lowercase to bypass the NSE API case-sensitivity bugs
+    
+    # Force all API keys to lowercase to bypass the NSE capitalization inconsistencies
     row_lower = {str(k).lower(): v for k, v in row.items()}
     
     symbol = str(row_lower.get('symbol', '')).strip().upper()
     
     if symbol in approved_symbols:
+        
         # 🟢 BULLETPROOF DATE FINDER
-        raw_date = str(row_lower.get('anndate', '') or row_lower.get('broadcastdate', '') or row_lower.get('date', ''))
+        raw_date = str(row_lower.get('anndate', '') or row_lower.get('broadcastdate', '') or row_lower.get('date', '')).strip()
+        if raw_date.lower() in ['none', 'nan', 'null']: raw_date = ""
         clean_date = raw_date.split(' ')[0] if raw_date else ""
         
         # 🟢 BULLETPROOF PDF LINK FINDER
         file_path = str(row_lower.get('attchmnttext', '') or row_lower.get('attchmntfile', '') or row_lower.get('attachment', '')).strip()
+        if file_path.lower() in ['none', 'nan', 'null']: file_path = ""
+        
         link = ""
         if file_path and len(file_path) > 3:
             if file_path.startswith('http'):
@@ -162,16 +171,15 @@ for row in raw_data:
             else:
                 link = f"https://nsearchives.nseindia.com/{file_path}"
 
+        # 🟢 EXTRACT DETAILED DESCRIPTION
         subject = str(row_lower.get('sm_name', '')).strip()
-        desc = str(row_lower.get('desc', '')).strip()
+        if subject.lower() in ['none', 'nan', 'null']: subject = ""
         
-        # Smart Text Combiner: Merges Subject & Desc without duplicating text
-        if subject.lower() in desc.lower() or not subject:
-            final_announcement = desc
-        elif desc.lower() in subject.lower() or not desc:
-            final_announcement = subject
-        else:
-            final_announcement = f"{subject} - {desc}"
+        desc = str(row_lower.get('desc', '')).strip()
+        if desc.lower() in ['none', 'nan', 'null']: desc = ""
+        
+        # If the detailed description exists and is longer than a generic subject, use it.
+        final_announcement = desc if len(desc) > len(subject) else subject
 
         category = categorize_announcement(subject, desc)
         
@@ -202,7 +210,7 @@ print(f"Appending {len(df_new)} categorized announcements to Google Sheets...")
 
 if not is_empty:
     existing_df = pd.DataFrame(existing_data[1:], columns=existing_data[0])
-    # Ensure alignment
+    # Protect against ghost columns in existing sheets
     for col in desired_columns:
         if col not in existing_df.columns:
             existing_df[col] = ""
@@ -218,7 +226,8 @@ df_final = df_final.sort_values(by='Date', ascending=False)
 df_final['Date'] = df_final['Date'].dt.strftime('%d-%b-%Y')
 
 sheet_output = [df_final.columns.values.tolist()] + df_final.fillna("").values.tolist()
-worksheet.clear() # Wipe clean to prevent ghost columns
+
+worksheet.clear() 
 worksheet.update(values=sheet_output, range_name='A1', value_input_option='USER_ENTERED')
 worksheet.freeze(rows=1)
 worksheet.format('A1:G1', {
@@ -227,4 +236,3 @@ worksheet.format('A1:G1', {
 })
 
 print("✅ Corporate Announcements Database successfully updated!")
-
