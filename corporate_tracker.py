@@ -5,6 +5,7 @@ import requests
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
+from datetime import datetime, timedelta
 
 # ==========================================
 # 1. AUTHENTICATE GOOGLE SHEETS
@@ -24,7 +25,7 @@ spreadsheet = gc.open_by_url(SHEET_URL)
 TAB_NAME = "Corporate_Announcements"
 
 # ==========================================
-# 2. GET USER STOCK UNIVERSE & INDUSTRIES
+# 2. GET USER STOCK UNIVERSE
 # ==========================================
 print("Fetching approved stock universe from Master Sheet...")
 try:
@@ -32,7 +33,6 @@ try:
     master_data = master_ws.get_all_records()
     master_df = pd.DataFrame(master_data)
     
-    # Create a dictionary to instantly look up Company Name and Industry
     universe_dict = {}
     for _, row in master_df.iterrows():
         sym = str(row.get('Symbol', '')).strip().upper()
@@ -51,7 +51,6 @@ approved_symbols = list(universe_dict.keys())
 # ==========================================
 def categorize_announcement(subject, desc):
     text = (str(subject) + " " + str(desc)).lower()
-    
     categories = {
         "Order Wins": ["order", "award", "contract", "letter of intent", "loi"],
         "Capex / Expansions": ["capex", "capacity", "expansion", "commissioning", "new plant", "new unit", "commercial production"],
@@ -68,17 +67,41 @@ def categorize_announcement(subject, desc):
         "Legal / Red Flags": ["default", "penalty", "show cause", "sebi", "cbi", "ed ", "income tax", "fraud", "resignation of auditor", "nclt", "bankruptcy", "forensic"]
     }
     
-    # Check for specific high-priority keywords first
     for cat, keywords in categories.items():
         if any(kw in text for kw in keywords):
             return cat
-            
     return "Other Important Announcements"
 
 # ==========================================
-# 4. FETCH LIVE NSE ANNOUNCEMENTS
+# 4. DETERMINE FETCH RANGES (6-MONTH BACKFILL LOGIC)
 # ==========================================
-print("Connecting to NSE API for latest corporate announcements...")
+try:
+    worksheet = spreadsheet.worksheet(TAB_NAME)
+    existing_data = worksheet.get_all_values()
+    is_empty = len(existing_data) <= 1
+except gspread.exceptions.WorksheetNotFound:
+    worksheet = spreadsheet.add_worksheet(title=TAB_NAME, rows="5000", cols="8")
+    existing_data = []
+    is_empty = True
+
+fetch_ranges = []
+if is_empty:
+    print("Sheet is empty. Initiating 6-month historical backfill (bypassing NSE limits via 30-day chunks)...")
+    end_dt = datetime.today()
+    for _ in range(6):
+        start_dt = end_dt - timedelta(days=30)
+        fetch_ranges.append((start_dt.strftime("%d-%m-%Y"), end_dt.strftime("%d-%m-%Y")))
+        end_dt = start_dt - timedelta(days=1)
+else:
+    print("Sheet has data. Fetching recent updates for the last 7 days...")
+    end_dt = datetime.today()
+    start_dt = end_dt - timedelta(days=7)
+    fetch_ranges.append((start_dt.strftime("%d-%m-%Y"), end_dt.strftime("%d-%m-%Y")))
+
+# ==========================================
+# 5. FETCH LIVE NSE ANNOUNCEMENTS
+# ==========================================
+print("Connecting to NSE API...")
 session = requests.Session()
 headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -89,28 +112,34 @@ headers = {
 session.get("https://www.nseindia.com", headers=headers, timeout=10)
 time.sleep(2)
 
-api_url = "https://www.nseindia.com/api/corporate-announcements?index=equities"
 raw_data = []
-
-for attempt in range(3):
-    try:
-        response = session.get(api_url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            raw_data = response.json()
-            print(f"✅ Successfully fetched {len(raw_data)} recent announcements.")
-            break
-    except Exception as e:
-        pass
-    time.sleep(5)
+for start_str, end_str in fetch_ranges:
+    api_url = f"https://www.nseindia.com/api/corporate-announcements?index=equities&from_date={start_str}&to_date={end_str}"
+    print(f" -> Fetching timeframe: {start_str} to {end_str}")
+    
+    for attempt in range(3):
+        try:
+            response = session.get(api_url, headers=headers, timeout=15)
+            if response.status_code == 200:
+                chunk_data = response.json()
+                raw_data.extend(chunk_data)
+                print(f"    ✅ Got {len(chunk_data)} records.")
+                break
+            else:
+                print(f"    ⚠️ Status {response.status_code}. Retrying...")
+        except Exception as e:
+            pass
+        time.sleep(3)
+    time.sleep(2) 
 
 if not raw_data:
     print("No data fetched from NSE. Try again later.")
     raise SystemExit(0)
 
 # ==========================================
-# 5. FILTER & CATEGORIZE DATA
+# 6. FILTER & CATEGORIZE DATA
 # ==========================================
-print("Filtering against Master Universe and categorizing data...")
+print("Filtering against Master Universe and separating Summary column...")
 df = pd.DataFrame(raw_data)
 filtered_announcements = []
 
@@ -119,56 +148,52 @@ for _, row in df.iterrows():
     desc = str(row.get('desc', ''))
     subject = str(row.get('sm_name', ''))
     
-    # ONLY process stocks that exist in your Avg Rupee Volume Master
+    # Date Fallback Logic
+    raw_date = str(row.get('anndate', '') or row.get('broadCastDate', '') or row.get('date', ''))
+    clean_date = raw_date.split(' ')[0] if raw_date else ""
+    
+    # PDF Link Formatting
+    file_path = row.get('attchmntText', '') or row.get('attchmntFile', '')
+    if file_path:
+        link = f"https://nsearchives.nseindia.com{file_path}" if not file_path.startswith('http') else file_path
+    else:
+        link = ""
+
     if symbol in approved_symbols:
         category = categorize_announcement(subject, desc)
         
-        # We drop generic daily updates unless they caught a category
+        # Drop meaningless daily noise
         if category != "Other Important Announcements" or ("update" not in desc.lower() and "loss of share" not in desc.lower()):
-            
-            # Combine subject and description for the dashboard view
-            full_announcement = f"{subject}: {desc}"
-            link = f"https://www.nseindia.com{row.get('attchmntText', '')}" if row.get('attchmntText') else ""
-            
             filtered_announcements.append({
-                "Date": row.get('anndate', '').split(' ')[0] if row.get('anndate') else "",
+                "Date": clean_date,
                 "Industry": universe_dict[symbol]['Industry'],
                 "Category": category,
                 "Company Name": universe_dict[symbol]['Company Name'],
                 "NSE Code": symbol,
-                "Announcement": full_announcement,
+                "Announcement": subject,
+                "Summary": desc,
                 "PDF Link": link
             })
 
 if not filtered_announcements:
-    print("No relevant announcements found for your stock universe today.")
+    print("No relevant announcements found for your stock universe in this timeframe.")
     raise SystemExit(0)
 
 df_new = pd.DataFrame(filtered_announcements)
 
 # ==========================================
-# 6. APPEND TO GOOGLE SHEETS
+# 7. APPEND TO GOOGLE SHEETS
 # ==========================================
 print(f"Appending {len(df_new)} categorized announcements to Google Sheets...")
-try:
-    worksheet = spreadsheet.worksheet(TAB_NAME)
-    existing_data = worksheet.get_all_values()
-    
-    if len(existing_data) > 1:
-        existing_df = pd.DataFrame(existing_data[1:], columns=existing_data[0])
-        # Combine new data with old data, drop duplicates based on Symbol, Date, and Category
-        df_final = pd.concat([df_new, existing_df]).drop_duplicates(subset=['Date', 'NSE Code', 'Category', 'Announcement'])
-        # Keep the latest 5000 records to serve as a deep database for your dashboard
-        df_final = df_final.head(5000)
-    else:
-        df_final = df_new
-        
-    worksheet.clear()
-except gspread.exceptions.WorksheetNotFound:
-    worksheet = spreadsheet.add_worksheet(title=TAB_NAME, rows="5000", cols="7")
+
+if not is_empty:
+    existing_df = pd.DataFrame(existing_data[1:], columns=existing_data[0])
+    df_final = pd.concat([df_new, existing_df]).drop_duplicates(subset=['Date', 'NSE Code', 'Category', 'Announcement'])
+else:
     df_final = df_new
 
-# Sort by Date descending
+# Keep history clean and sorted
+df_final = df_final.head(5000)
 df_final['Date'] = pd.to_datetime(df_final['Date'], format='mixed', dayfirst=True, errors='coerce')
 df_final = df_final.sort_values(by='Date', ascending=False)
 df_final['Date'] = df_final['Date'].dt.strftime('%d-%b-%Y')
@@ -176,7 +201,7 @@ df_final['Date'] = df_final['Date'].dt.strftime('%d-%b-%Y')
 sheet_output = [df_final.columns.values.tolist()] + df_final.fillna("").values.tolist()
 worksheet.update(values=sheet_output, range_name='A1', value_input_option='USER_ENTERED')
 worksheet.freeze(rows=1)
-worksheet.format('A1:G1', {
+worksheet.format('A1:H1', {
     "backgroundColor": {"red": 0.1, "green": 0.2, "blue": 0.4},
     "textFormat": {"foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}, "bold": True}
 })
