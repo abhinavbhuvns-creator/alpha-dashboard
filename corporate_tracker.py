@@ -13,7 +13,6 @@ warnings.simplefilter(action='ignore')
 # ==========================================
 # 1. AUTHENTICATE GOOGLE SHEETS
 # ==========================================
-print("Authenticating with Google Service Account...")
 creds_json = os.environ.get('GOOGLE_CREDENTIALS')
 if not creds_json:
     raise SystemExit("🛑 Error: GOOGLE_CREDENTIALS not found in GitHub Secrets.")
@@ -30,7 +29,6 @@ TAB_NAME = "Corporate_Announcements"
 # ==========================================
 # 2. GET USER STOCK UNIVERSE & INDUSTRIES
 # ==========================================
-print("Fetching approved stock universe from Master Sheet...")
 try:
     master_ws = spreadsheet.worksheet("Avg_Rupee_Volume_Master")
     master_df = pd.DataFrame(master_ws.get_all_records())
@@ -51,11 +49,11 @@ approved_symbols = list(universe_dict.keys())
 def categorize_announcement(subject, desc):
     text = (str(subject) + " " + str(desc)).lower()
     
-    # 🟢 NOISE TRAP: Catch NSE boilerplate before it hits other filters
+    # 🟢 NOISE TRAP: Catch NSE boilerplate
     if any(kw in text for kw in ["significant movement in price", "significant increase in volume", "clarification on price movement"]):
         return "Exchange Clarification"
 
-    # 🟢 PRIORITY 1: Legal & Court (Full phrasing)
+    # 🟢 PRIORITY 1: Legal & Court
     legal_keywords = [
         "court", "tribunal", "litigation", "nclt", "central bureau of investigation", 
         "enforcement directorate", "income tax", "penalty", "show cause", "default", "fraud", 
@@ -69,16 +67,19 @@ def categorize_announcement(subject, desc):
     if any(kw in text for kw in ["financial result", "audited", "unaudited", "earnings"]):
         return "Financial Results"
 
-    if any(kw in text for kw in ["new product", "product launch", "commercial launch"]):
-        return "New Product Launches"
+    if any(kw in text for kw in ["new product", "product launch", "commercial launch", "patent", "marketing authorisation", "fda approval", "usfda", "ce mark"]):
+        return "New Product / PATENT"
         
     # TEXT ERASURE: Remove boilerplate traps so the standalone word "order" is safe to use
-    clean_text_for_orders = text.replace("in order to", "").replace("order passed", "").replace("order dated", "").replace("court order", "").replace("order-in-original", "")
+    clean_text_for_orders = text.replace("in order to", "").replace("order passed", "").replace("order dated", "").replace("court order", "").replace("order-in-original", "").replace("order of sebi", "").replace("order of any", "").replace("order of final hearing", "").replace("scheme of amalgamation", "")
     
     order_keywords = [
-        "order", "orders", "contract", "contracts", "bagged", "bagging", 
-        "secured", "secures", "winning", "wins", "awarded", "awarding", 
-        "letter of award", "loi", "letter of intent"
+        "order", "orders", "bagged", "bagging", "bags", 
+        "winning", "wins", "awarded", "awarding", 
+        "letter of award", "loi", "letter of intent",
+        "letter of acceptance", "loa",
+        "execution of contract", "revenue sharing contract", "rate contract", "turnkey contract", "epc contract", "work order", "order book",
+        "secures engagement"
     ]
     if any(kw in clean_text_for_orders for kw in order_keywords):
         return "Order Wins"
@@ -140,7 +141,6 @@ if len(existing_data) > 1:
 else:
     existing_df = pd.DataFrame(columns=desired_columns)
 
-print("Connecting to NSE API...")
 session = requests.Session()
 headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -153,7 +153,6 @@ time.sleep(2)
 # ==========================================
 # 5. FETCH 15 DAYS OF DATA IN 5-DAY CHUNKS
 # ==========================================
-print("Fetching 15 days of market data...")
 fetch_ranges = []
 end_dt = datetime.today()
 for _ in range(3):
@@ -164,7 +163,6 @@ for _ in range(3):
 raw_data = []
 for start_str, end_str in fetch_ranges:
     api_url = f"https://www.nseindia.com/api/corporate-announcements?index=equities&from_date={start_str}&to_date={end_str}"
-    print(f" -> Fetching timeframe: {start_str} to {end_str}")
     
     for attempt in range(3):
         try:
@@ -178,13 +176,11 @@ for start_str, end_str in fetch_ranges:
     time.sleep(1) 
 
 if not raw_data:
-    print("No data fetched from NSE. Try again later.")
     raise SystemExit(0)
 
 # ==========================================
 # 6. FILTER & CATEGORIZE
 # ==========================================
-print("Filtering against Master Universe...")
 filtered_announcements = []
 
 for row in raw_data:
@@ -226,7 +222,6 @@ for row in raw_data:
 
 df_new = pd.DataFrame(filtered_announcements)
 if df_new.empty:
-    print("No relevant announcements found in the last 15 days for your universe.")
     raise SystemExit(0)
     
 df_new = df_new[desired_columns]
@@ -234,7 +229,6 @@ df_new = df_new[desired_columns]
 # ==========================================
 # 7. MERGE, DROP DUPLICATES, AND APPEND
 # ==========================================
-print("Merging with historical data and preventing duplicates...")
 df_final = pd.concat([df_new, existing_df])
 df_final = df_final.drop_duplicates(subset=['Date', 'NSE Code', 'Category', 'Announcement'])
 
@@ -244,7 +238,6 @@ df_final['Date'] = pd.to_datetime(df_final['Date'], format='mixed', dayfirst=Tru
 
 df_final = df_final.head(5000)
 
-print(f"Writing {len(df_final)} total records to Google Sheets...")
 sheet_output = [df_final.columns.values.tolist()] + df_final.fillna("").values.tolist()
 
 worksheet.clear() 
@@ -254,5 +247,3 @@ worksheet.format('A1:G1', {
     "backgroundColor": {"red": 0.1, "green": 0.2, "blue": 0.4},
     "textFormat": {"foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}, "bold": True}
 })
-
-print("✅ Corporate Announcements Database successfully updated!")
