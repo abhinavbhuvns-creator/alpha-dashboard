@@ -2,12 +2,13 @@ import os
 import json
 import time
 import requests
-import urllib.parse
 import pandas as pd
 import numpy as np
 import yfinance as yf
 import gspread
 from google.oauth2.service_account import Credentials
+import concurrent.futures
+from datetime import datetime, timedelta
 import warnings
 
 warnings.simplefilter(action='ignore')
@@ -37,268 +38,211 @@ print("Fetching approved stock universe from Master Sheet...")
 try:
     master_ws = spreadsheet.worksheet("Avg_Rupee_Volume_Master")
     master_df = pd.DataFrame(master_ws.get_all_records())
-    
-    universe_dict = {}
-    for _, row in master_df.iterrows():
-        sym = str(row.get('Symbol', '')).strip().upper()
-        if sym:
-            universe_dict[sym] = {
-                'Company Name': row.get('Company Name', sym),
-                'Industry': row.get('Industry Group', 'Unclassified')
-            }
+    universe_dict = {
+        str(row.get('Symbol', '')).strip().upper(): {
+            'Company Name': row.get('Company Name', ''),
+            'Industry': row.get('Industry Group', 'Unclassified')
+        } for _, row in master_df.iterrows() if str(row.get('Symbol', '')).strip()
+    }
 except Exception as e:
     raise SystemExit(f"🛑 Error reading Master Data: {e}")
 
 approved_symbols = list(universe_dict.keys())
 
 # ==========================================
-# 3. HELPER FUNCTIONS FOR MATH & QUARTERS
+# 3. HELPER FUNCTIONS
 # ==========================================
 def get_fy_quarter(date_str):
     try:
         dt = pd.to_datetime(date_str)
-        month = dt.month
-        year = dt.year
-        if month in [1, 2, 3]: return f"Q4 FY{year}"
-        elif month in [4, 5, 6]: return f"Q1 FY{year+1}"
-        elif month in [7, 8, 9]: return f"Q2 FY{year+1}"
-        else: return f"Q3 FY{year+1}"
-    except:
-        return "Unknown Qtr"
+        if dt.month in [1, 2, 3]: return f"Q4 FY{dt.year}"
+        elif dt.month in [4, 5, 6]: return f"Q1 FY{dt.year+1}"
+        elif dt.month in [7, 8, 9]: return f"Q2 FY{dt.year+1}"
+        else: return f"Q3 FY{dt.year+1}"
+    except: return "Unknown"
 
-def calc_yoy_growth(current, past):
+def calc_yoy(c, p):
+    try: return ((float(c) - float(p)) / abs(float(p))) * 100 if pd.notna(c) and pd.notna(p) and float(p) != 0 else np.nan
+    except: return np.nan
+
+def calc_cagr(c, p, yrs=3):
+    try: return ((float(c) / float(p)) ** (1 / yrs) - 1) * 100 if pd.notna(c) and pd.notna(p) and float(p) > 0 and float(c) > 0 else np.nan
+    except: return np.nan
+
+# ==========================================
+# 4. MULTITHREADED YAHOO FINANCE FETCH
+# ==========================================
+print(f"Executing Multithreaded Yahoo Finance Fetch for {len(approved_symbols)} stocks...")
+
+def fetch_yf_data(sym):
+    data = {"Stock Symbol": sym, "Industry": universe_dict[sym]['Industry'], "Company Name": universe_dict[sym]['Company Name']}
     try:
-        c = float(current)
-        p = float(past)
-        if pd.isna(c) or pd.isna(p) or p == 0:
-            return np.nan
-        # Absolute value on denominator handles negative to positive turnarounds mathematically
-        return ((c - p) / abs(p)) * 100
-    except:
-        return np.nan
-
-def calc_cagr(current, past, years=3):
-    try:
-        c = float(current)
-        p = float(past)
-        if pd.isna(c) or pd.isna(p) or p <= 0 or c <= 0:
-            return np.nan
-        return ((c / p) ** (1 / years) - 1) * 100
-    except:
-        return np.nan
-
-# ==========================================
-# 4. INITIALIZE SESSIONS
-# ==========================================
-print("Initializing NSE Session & Fetching Fundamentals...")
-session = requests.Session()
-headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': '*/*',
-    'Accept-Language': 'en-US,en;q=0.9'
-}
-session.get("https://www.nseindia.com", headers=headers, timeout=10)
-time.sleep(2)
-
-final_fundamental_data = []
-
-# ==========================================
-# 5. FETCH DATA SYMBOL BY SYMBOL
-# ==========================================
-for idx, sym in enumerate(approved_symbols):
-    if idx > 0 and idx % 40 == 0:
-        print(f" -> Resting session at {idx} stocks to prevent IP ban...")
-        session.close()
-        time.sleep(5)
-        session = requests.Session()
-        session.get("https://www.nseindia.com", headers=headers, timeout=10)
-        time.sleep(2)
-
-    print(f"Processing {sym} ({idx+1}/{len(approved_symbols)})...")
-    stock_data = {
-        "Stock Symbol": sym,
-        "Industry": universe_dict[sym]['Industry'],
-        "Company Name": universe_dict[sym]['Company Name']
-    }
-
-    # --- PART A: YFINANCE FOR ANNUAL & ROCE ---
-    yf_sym = f"{sym}.NS"
-    ticker = yf.Ticker(yf_sym)
-    
-    annual_sales_cagr = np.nan
-    annual_pat_cagr = np.nan
-    annual_eps_cagr = np.nan
-    roce_growth = np.nan
-
-    try:
-        # Fetch Income Statement and Balance Sheet
+        ticker = yf.Ticker(f"{sym}.NS")
         inc_stmt = ticker.financials
         bal_sheet = ticker.balance_sheet
         
         if not inc_stmt.empty and len(inc_stmt.columns) >= 4:
-            # Sort columns chronologically (oldest to newest)
             inc_stmt = inc_stmt[sorted(inc_stmt.columns)]
+            data["Annual Sales 3Y Growth (%)"] = round(calc_cagr(inc_stmt.loc['Total Revenue'].iloc[-1], inc_stmt.loc['Total Revenue'].iloc[-4]), 2) if 'Total Revenue' in inc_stmt.index else "N/A"
+            data["Annual PAT 3Y Growth (%)"] = round(calc_yoy(inc_stmt.loc['Net Income'].iloc[-1], inc_stmt.loc['Net Income'].iloc[-4]), 2) if 'Net Income' in inc_stmt.index else "N/A"
+            data["Annual EPS 3Y Growth (%)"] = round(calc_yoy(inc_stmt.loc['Basic EPS'].iloc[-1], inc_stmt.loc['Basic EPS'].iloc[-4]), 2) if 'Basic EPS' in inc_stmt.index else "N/A"
+        else:
+            data.update({"Annual Sales 3Y Growth (%)": "N/A", "Annual PAT 3Y Growth (%)": "N/A", "Annual EPS 3Y Growth (%)": "N/A"})
             
-            sales_row = inc_stmt.loc['Total Revenue'] if 'Total Revenue' in inc_stmt.index else None
-            pat_row = inc_stmt.loc['Net Income'] if 'Net Income' in inc_stmt.index else None
-            eps_row = inc_stmt.loc['Basic EPS'] if 'Basic EPS' in inc_stmt.index else None
-            
-            if sales_row is not None:
-                annual_sales_cagr = calc_cagr(sales_row.iloc[-1], sales_row.iloc[-4], 3)
-            if pat_row is not None:
-                annual_pat_cagr = calc_yoy_growth(pat_row.iloc[-1], pat_row.iloc[-4]) # Simple 3Y absolute growth for profit
-            if eps_row is not None:
-                annual_eps_cagr = calc_yoy_growth(eps_row.iloc[-1], eps_row.iloc[-4])
-
-        # ROCE Calculation: EBIT / (Total Assets - Current Liabilities)
         if not inc_stmt.empty and not bal_sheet.empty and len(bal_sheet.columns) >= 4:
             bal_sheet = bal_sheet[sorted(bal_sheet.columns)]
-            
-            ebit_row = inc_stmt.loc['EBIT'] if 'EBIT' in inc_stmt.index else None
-            assets_row = bal_sheet.loc['Total Assets'] if 'Total Assets' in bal_sheet.index else None
-            curr_liab_row = bal_sheet.loc['Current Liabilities'] if 'Current Liabilities' in bal_sheet.index else None
-            
-            if ebit_row is not None and assets_row is not None and curr_liab_row is not None:
-                try:
-                    ce_current = assets_row.iloc[-1] - curr_liab_row.iloc[-1]
-                    roce_current = (ebit_row.iloc[-1] / ce_current) * 100 if ce_current > 0 else np.nan
-                    
-                    ce_past = assets_row.iloc[-4] - curr_liab_row.iloc[-4]
-                    roce_past = (ebit_row.iloc[-4] / ce_past) * 100 if ce_past > 0 else np.nan
-                    
-                    roce_growth = roce_current - roce_past # Basis point/percentage expansion
-                except:
-                    pass
-
+            ce_cur = bal_sheet.loc['Total Assets'].iloc[-1] - bal_sheet.loc['Current Liabilities'].iloc[-1] if 'Total Assets' in bal_sheet.index and 'Current Liabilities' in bal_sheet.index else 0
+            ce_pst = bal_sheet.loc['Total Assets'].iloc[-4] - bal_sheet.loc['Current Liabilities'].iloc[-4] if 'Total Assets' in bal_sheet.index and 'Current Liabilities' in bal_sheet.index else 0
+            roce_cur = (inc_stmt.loc['EBIT'].iloc[-1] / ce_cur) * 100 if ce_cur > 0 and 'EBIT' in inc_stmt.index else np.nan
+            roce_pst = (inc_stmt.loc['EBIT'].iloc[-4] / ce_pst) * 100 if ce_pst > 0 and 'EBIT' in inc_stmt.index else np.nan
+            data["ROCE 3Y Expansion (%)"] = round(roce_cur - roce_pst, 2) if pd.notna(roce_cur) and pd.notna(roce_pst) else "N/A"
+        else:
+            data["ROCE 3Y Expansion (%)"] = "N/A"
     except Exception:
-        pass
+        data.update({"Annual Sales 3Y Growth (%)": "N/A", "Annual PAT 3Y Growth (%)": "N/A", "Annual EPS 3Y Growth (%)": "N/A", "ROCE 3Y Expansion (%)": "N/A"})
+    return data
 
-    stock_data["Annual Sales 3Y Growth (%)"] = round(annual_sales_cagr, 2) if pd.notna(annual_sales_cagr) else "N/A"
-    stock_data["Annual PAT 3Y Growth (%)"] = round(annual_pat_cagr, 2) if pd.notna(annual_pat_cagr) else "N/A"
-    stock_data["Annual EPS 3Y Growth (%)"] = round(annual_eps_cagr, 2) if pd.notna(annual_eps_cagr) else "N/A"
-    stock_data["ROCE 3Y Expansion (%)"] = round(roce_growth, 2) if pd.notna(roce_growth) else "N/A"
+with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+    yf_results = list(executor.map(fetch_yf_data, approved_symbols))
 
+yf_df = pd.DataFrame(yf_results)
+yf_df.set_index('Stock Symbol', inplace=True)
 
-    # --- PART B: NSE API FOR QUARTERLY RESULTS ---
-    safe_sym = urllib.parse.quote(sym)
-    api_url = f"https://www.nseindia.com/api/corporates-financial-results?index=equities&symbol={safe_sym}&period=Quarterly"
+# ==========================================
+# 5. NSE BULK FINANCIALS FETCH (14 QUARTERS)
+# ==========================================
+print("Connecting to NSE for Bulk Financial Data (14 Quarters)...")
+session = requests.Session()
+headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Accept': '*/*'
+}
+session.get("https://www.nseindia.com", headers=headers, timeout=10)
+time.sleep(2)
+
+nse_raw_data = []
+end_dt = datetime.today()
+
+# 14 chunks of 90 days to cover roughly 3.5 years
+for i in range(14):
+    start_dt = end_dt - timedelta(days=90)
+    start_str = start_dt.strftime('%d-%m-%Y')
+    end_str = end_dt.strftime('%d-%m-%Y')
+    api_url = f"https://www.nseindia.com/api/corporates-financial-results?index=equities&from_date={start_str}&to_date={end_str}"
     
-    q_data = []
+    print(f" -> Fetching market-wide financials: {start_str} to {end_str}")
+    success = False
     for attempt in range(3):
         try:
-            res = session.get(api_url, headers=headers, timeout=10)
+            res = session.get(api_url, headers=headers, timeout=15)
             if res.status_code == 200:
-                q_data = res.json()
+                data = res.json()
+                if data:
+                    nse_raw_data.extend(data)
+                print(f"    Found {len(data)} results in chunk.")
+                success = True
                 break
         except Exception:
             pass
         time.sleep(2)
         
-    if not q_data:
-        final_fundamental_data.append(stock_data)
-        continue
-
-    # Extract and clean quarterly JSON
-    df_q = pd.DataFrame(q_data)
-    if 'fromDate' not in df_q.columns or 'reviwPeriodEndDate' not in df_q.columns:
-        final_fundamental_data.append(stock_data)
-        continue
-
-    # Standardize columns (handling NSE's inconsistent naming)
-    df_q = df_q.rename(columns=lambda x: x.strip().lower())
-    
-    # We need End Date, Income, Profit, and EPS. We force them to numeric.
-    date_col = 'reviwperiodenddate' if 'reviwperiodenddate' in df_q.columns else 'todate'
-    sales_col = 'totincomefromoperations' if 'totincomefromoperations' in df_q.columns else 'incomefromoperations'
-    pat_col = 'netprofitlossforperiod'
-    eps_col = 'dilutedepsbeforeextraordinaryitems'
-    
-    if date_col not in df_q.columns:
-        final_fundamental_data.append(stock_data)
-        continue
-
-    df_q[date_col] = pd.to_datetime(df_q[date_col], format='mixed', dayfirst=True, errors='coerce')
-    df_q = df_q.dropna(subset=[date_col]).sort_values(by=date_col, ascending=False).drop_duplicates(subset=[date_col])
-    
-    for col in [sales_col, pat_col, eps_col]:
-        if col in df_q.columns:
-            df_q[col] = pd.to_numeric(df_q[col], errors='coerce')
-        else:
-            df_q[col] = np.nan
-
-    # Limit to the required 14 quarters (to calculate YoY for 10 quarters)
-    df_q = df_q.head(14).reset_index(drop=True)
-    
-    # Generate the 10-Quarter layout
-    for i in range(10):
-        q_label = f"Q_Minus_{i}" if i > 0 else "Q_Current"
+    if not success:
+        print(f"    ⚠️ NSE rejected chunk or timed out.")
         
-        if i < len(df_q):
-            current_row = df_q.iloc[i]
-            q_name = get_fy_quarter(current_row[date_col])
-            sales = current_row[sales_col] / 100 if pd.notna(current_row[sales_col]) else np.nan # Convert to Crores usually reported in Lakhs
-            pat = current_row[pat_col] / 100 if pd.notna(current_row[pat_col]) else np.nan
-            eps = current_row[eps_col] if pd.notna(current_row[eps_col]) else np.nan
-            
-            # YoY calculations (Compare against index i + 4)
-            sales_yoy = np.nan
-            pat_yoy = np.nan
-            eps_yoy = np.nan
-            
-            if (i + 4) < len(df_q):
-                past_row = df_q.iloc[i + 4]
-                past_sales = past_row[sales_col] / 100 if pd.notna(past_row[sales_col]) else np.nan
-                past_pat = past_row[pat_col] / 100 if pd.notna(past_row[pat_col]) else np.nan
-                past_eps = past_row[eps_col] if pd.notna(past_row[eps_col]) else np.nan
+    end_dt = start_dt - timedelta(days=1)
+    time.sleep(1)
+
+# ==========================================
+# 6. PROCESS BULK NSE DATA & MERGE
+# ==========================================
+print("Processing NSE Bulk Data & Calculating YoY Growth...")
+final_master_data = []
+
+# Process NSE Bulk Data if it worked
+if nse_raw_data:
+    df_nse = pd.DataFrame(nse_raw_data).rename(columns=lambda x: str(x).strip().lower())
+    date_col = 'reviwperiodenddate' if 'reviwperiodenddate' in df_nse.columns else 'todate'
+    
+    if date_col in df_nse.columns and 'symbol' in df_nse.columns:
+        df_nse['symbol'] = df_nse['symbol'].str.strip().str.upper()
+        df_nse[date_col] = pd.to_datetime(df_nse[date_col], format='mixed', dayfirst=True, errors='coerce')
+        df_nse = df_nse.dropna(subset=[date_col]).sort_values(by=date_col, ascending=False)
+    else:
+        df_nse = pd.DataFrame() # Fallback if API returned weird structure
+else:
+    df_nse = pd.DataFrame()
+
+# Merge per symbol
+for sym in approved_symbols:
+    stock_dict = yf_df.loc[sym].to_dict() if sym in yf_df.index else {}
+    stock_dict["Stock Symbol"] = sym
+    
+    if not df_nse.empty and sym in df_nse['symbol'].values:
+        sym_df = df_nse[df_nse['symbol'] == sym].drop_duplicates(subset=[date_col]).head(14).reset_index(drop=True)
+        
+        for i in range(10):
+            lbl = f"Q_Minus_{i}" if i > 0 else "Q_Current"
+            if i < len(sym_df):
+                row = sym_df.iloc[i]
+                s = pd.to_numeric(row.get('totincomefromoperations', row.get('incomefromoperations')), errors='coerce') / 100
+                p = pd.to_numeric(row.get('netprofitlossforperiod'), errors='coerce') / 100
+                e = pd.to_numeric(row.get('dilutedepsbeforeextraordinaryitems'), errors='coerce')
                 
-                sales_yoy = calc_yoy_growth(sales, past_sales)
-                pat_yoy = calc_yoy_growth(pat, past_pat)
-                eps_yoy = calc_yoy_growth(eps, past_eps)
-            
-            stock_data[f"Quarter ({q_label})"] = q_name
-            stock_data[f"Sales Cr ({q_label})"] = round(sales, 2) if pd.notna(sales) else "N/A"
-            stock_data[f"Sales YoY % ({q_label})"] = f"{round(sales_yoy, 1)}%" if pd.notna(sales_yoy) else "N/A"
-            
-            stock_data[f"PAT Cr ({q_label})"] = round(pat, 2) if pd.notna(pat) else "N/A"
-            stock_data[f"PAT YoY % ({q_label})"] = f"{round(pat_yoy, 1)}%" if pd.notna(pat_yoy) else "N/A"
-            
-            stock_data[f"EPS ({q_label})"] = round(eps, 2) if pd.notna(eps) else "N/A"
-            stock_data[f"EPS YoY % ({q_label})"] = f"{round(eps_yoy, 1)}%" if pd.notna(eps_yoy) else "N/A"
-        else:
-            stock_data[f"Quarter ({q_label})"] = "N/A"
-            stock_data[f"Sales Cr ({q_label})"] = "N/A"
-            stock_data[f"Sales YoY % ({q_label})"] = "N/A"
-            stock_data[f"PAT Cr ({q_label})"] = "N/A"
-            stock_data[f"PAT YoY % ({q_label})"] = "N/A"
-            stock_data[f"EPS ({q_label})"] = "N/A"
-            stock_data[f"EPS YoY % ({q_label})"] = "N/A"
+                s_yoy, p_yoy, e_yoy = np.nan, np.nan, np.nan
+                if (i + 4) < len(sym_df):
+                    p_row = sym_df.iloc[i + 4]
+                    ps = pd.to_numeric(p_row.get('totincomefromoperations', p_row.get('incomefromoperations')), errors='coerce') / 100
+                    pp = pd.to_numeric(p_row.get('netprofitlossforperiod'), errors='coerce') / 100
+                    pe = pd.to_numeric(p_row.get('dilutedepsbeforeextraordinaryitems'), errors='coerce')
+                    s_yoy = calc_yoy(s, ps)
+                    p_yoy = calc_yoy(p, pp)
+                    e_yoy = calc_yoy(e, pe)
+                    
+                stock_dict.update({
+                    f"Quarter ({lbl})": get_fy_quarter(row[date_col]), 
+                    f"Sales Cr ({lbl})": round(s,2) if pd.notna(s) else "N/A", 
+                    f"Sales YoY % ({lbl})": f"{round(s_yoy,1)}%" if pd.notna(s_yoy) else "N/A", 
+                    f"PAT Cr ({lbl})": round(p,2) if pd.notna(p) else "N/A", 
+                    f"PAT YoY % ({lbl})": f"{round(p_yoy,1)}%" if pd.notna(p_yoy) else "N/A", 
+                    f"EPS ({lbl})": round(e,2) if pd.notna(e) else "N/A", 
+                    f"EPS YoY % ({lbl})": f"{round(e_yoy,1)}%" if pd.notna(e_yoy) else "N/A"
+                })
+            else:
+                stock_dict.update({f"Quarter ({lbl})": "N/A", f"Sales Cr ({lbl})": "N/A", f"Sales YoY % ({lbl})": "N/A", f"PAT Cr ({lbl})": "N/A", f"PAT YoY % ({lbl})": "N/A", f"EPS ({lbl})": "N/A", f"EPS YoY % ({lbl})": "N/A"})
+    else:
+        # No NSE data found for this symbol
+        for i in range(10):
+            lbl = f"Q_Minus_{i}" if i > 0 else "Q_Current"
+            stock_dict.update({f"Quarter ({lbl})": "N/A", f"Sales Cr ({lbl})": "N/A", f"Sales YoY % ({lbl})": "N/A", f"PAT Cr ({lbl})": "N/A", f"PAT YoY % ({lbl})": "N/A", f"EPS ({lbl})": "N/A", f"EPS YoY % ({lbl})": "N/A"})
 
-    final_fundamental_data.append(stock_data)
+    final_master_data.append(stock_dict)
 
 # ==========================================
-# 6. EXPORT TO GOOGLE SHEETS
+# 7. PUSH TO GOOGLE SHEETS
 # ==========================================
-print("\nFormatting and writing to Google Sheets...")
-df_final = pd.DataFrame(final_fundamental_data)
-df_final = df_final.fillna("N/A")
+print("Pushing formatted data to Google Sheets...")
+df_final = pd.DataFrame(final_master_data).fillna("N/A")
+
+# Reorder columns to ensure Stock Symbol and Industry are first
+cols = df_final.columns.tolist()
+cols.insert(0, cols.pop(cols.index('Stock Symbol')))
+if 'Industry' in cols: cols.insert(1, cols.pop(cols.index('Industry')))
+if 'Company Name' in cols: cols.insert(2, cols.pop(cols.index('Company Name')))
+df_final = df_final[cols]
 
 try:
     worksheet = spreadsheet.worksheet(TAB_NAME)
     worksheet.clear()
 except gspread.exceptions.WorksheetNotFound:
-    # 75 columns width handles 10 quarters of 7 metrics plus base data
-    worksheet = spreadsheet.add_worksheet(title=TAB_NAME, rows="2000", cols="80")
+    worksheet = spreadsheet.add_worksheet(title=TAB_NAME, rows="2500", cols="80")
 
 sheet_output = [df_final.columns.values.tolist()] + df_final.values.tolist()
-
 worksheet.update(values=sheet_output, range_name='A1', value_input_option='USER_ENTERED')
-worksheet.freeze(rows=1, cols=1)
-
-# Format Headers
+worksheet.freeze(rows=1, cols=3)
 worksheet.format('A1:BZ1', {
     "backgroundColor": {"red": 0.1, "green": 0.2, "blue": 0.4},
     "textFormat": {"foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}, "bold": True},
     "horizontalAlignment": "CENTER"
 })
 
-print(f"✅ Fundamental Data fully updated with 10 Quarters of YoY math for {len(approved_symbols)} stocks!")
+print(f"✅ Fundamental Data fully updated for {len(final_master_data)} stocks!")
