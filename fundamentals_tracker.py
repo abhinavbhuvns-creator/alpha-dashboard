@@ -68,13 +68,12 @@ if not symbols_to_process:
     print("✅ All stocks fully processed!")
     raise SystemExit(0)
 
-# Limit to 50 stocks per run to guarantee no timeouts and no Yahoo bans
-BATCH_LIMIT = 30
+BATCH_LIMIT = 100
 symbols_to_process = symbols_to_process[:BATCH_LIMIT]
 print(f"Processing next batch of {len(symbols_to_process)} stocks...")
 
 # ==========================================
-# 3. HELPER FUNCTIONS
+# 3. HELPER FUNCTIONS & FALLBACK LOGIC
 # ==========================================
 def get_fy_quarter(date_str):
     try:
@@ -93,6 +92,19 @@ def calc_cagr(c, p, yrs=3):
     try: return ((float(c) / float(p)) ** (1 / yrs) - 1) * 100 if pd.notna(c) and pd.notna(p) and float(p) > 0 and float(c) > 0 else np.nan
     except: return np.nan
 
+def get_metric(row, keys):
+    # Hunts through the dictionary of possible NSE column names and STRIPS COMMAS
+    for k in keys:
+        if k in row and pd.notna(row[k]) and str(row[k]).strip() not in ["", "-"]:
+            clean_val = str(row[k]).replace(',', '').strip()
+            return pd.to_numeric(clean_val, errors='coerce')
+    return np.nan
+
+# Define the exact variations the NSE uses across different sectors
+SALES_KEYS = ['totincomefromoperations', 'incomefromoperations', 'totalincome', 'interestearned', 'revenuefromoperations']
+PAT_KEYS = ['netprofitlossforperiod', 'netprofitlossforperiodfromcontinuingoperations', 'profitlossaftertax']
+EPS_KEYS = ['dilutedepsbeforeextraordinaryitems', 'dilutedepsafterextraordinaryitems', 'dilutedepsbeforeextraordinaryitemsnotannualised', 'dilutedeps']
+
 # ==========================================
 # 4. INITIALIZE SESSION
 # ==========================================
@@ -110,7 +122,7 @@ for idx, sym in enumerate(symbols_to_process):
     print(f"Fetching {sym} ({idx+1}/{len(symbols_to_process)})...")
     stock_data = {"Stock Symbol": sym, "Industry": universe_dict[sym]['Industry'], "Company Name": universe_dict[sym]['Company Name']}
 
-    # --- YAHOO FINANCE (Synchronous to avoid bans) ---
+    # --- YAHOO FINANCE (Annual) ---
     try:
         ticker = yf.Ticker(f"{sym}.NS")
         inc_stmt = ticker.financials
@@ -162,19 +174,30 @@ for idx, sym in enumerate(symbols_to_process):
                 lbl = f"Q_Minus_{i}" if i > 0 else "Q_Current"
                 if i < len(df_q):
                     row = df_q.iloc[i]
-                    s = pd.to_numeric(row.get('totincomefromoperations', row.get('incomefromoperations')), errors='coerce') / 100
-                    p = pd.to_numeric(row.get('netprofitlossforperiod'), errors='coerce') / 100
-                    e = pd.to_numeric(row.get('dilutedepsbeforeextraordinaryitems'), errors='coerce')
+                    
+                    # Convert to Crores (NSE gives data in Lakhs, so divide by 100)
+                    s = get_metric(row, SALES_KEYS) / 100 if pd.notna(get_metric(row, SALES_KEYS)) else np.nan
+                    p = get_metric(row, PAT_KEYS) / 100 if pd.notna(get_metric(row, PAT_KEYS)) else np.nan
+                    e = get_metric(row, EPS_KEYS)
                     
                     s_yoy, p_yoy, e_yoy = np.nan, np.nan, np.nan
                     if (i + 4) < len(df_q):
                         p_row = df_q.iloc[i + 4]
-                        ps = pd.to_numeric(p_row.get('totincomefromoperations', p_row.get('incomefromoperations')), errors='coerce') / 100
-                        pp = pd.to_numeric(p_row.get('netprofitlossforperiod'), errors='coerce') / 100
-                        pe = pd.to_numeric(p_row.get('dilutedepsbeforeextraordinaryitems'), errors='coerce')
+                        ps = get_metric(p_row, SALES_KEYS) / 100 if pd.notna(get_metric(p_row, SALES_KEYS)) else np.nan
+                        pp = get_metric(p_row, PAT_KEYS) / 100 if pd.notna(get_metric(p_row, PAT_KEYS)) else np.nan
+                        pe = get_metric(p_row, EPS_KEYS)
+                        
                         s_yoy = calc_yoy(s, ps); p_yoy = calc_yoy(p, pp); e_yoy = calc_yoy(e, pe)
                         
-                    stock_data.update({f"Quarter ({lbl})": get_fy_quarter(row[date_col]), f"Sales Cr ({lbl})": round(s,2) if pd.notna(s) else "N/A", f"Sales YoY % ({lbl})": f"{round(s_yoy,1)}%" if pd.notna(s_yoy) else "N/A", f"PAT Cr ({lbl})": round(p,2) if pd.notna(p) else "N/A", f"PAT YoY % ({lbl})": f"{round(p_yoy,1)}%" if pd.notna(p_yoy) else "N/A", f"EPS ({lbl})": round(e,2) if pd.notna(e) else "N/A", f"EPS YoY % ({lbl})": f"{round(e_yoy,1)}%" if pd.notna(e_yoy) else "N/A"})
+                    stock_data.update({
+                        f"Quarter ({lbl})": get_fy_quarter(row[date_col]), 
+                        f"Sales Cr ({lbl})": round(s,2) if pd.notna(s) else "N/A", 
+                        f"Sales YoY % ({lbl})": f"{round(s_yoy,1)}%" if pd.notna(s_yoy) else "N/A", 
+                        f"PAT Cr ({lbl})": round(p,2) if pd.notna(p) else "N/A", 
+                        f"PAT YoY % ({lbl})": f"{round(p_yoy,1)}%" if pd.notna(p_yoy) else "N/A", 
+                        f"EPS ({lbl})": round(e,2) if pd.notna(e) else "N/A", 
+                        f"EPS YoY % ({lbl})": f"{round(e_yoy,1)}%" if pd.notna(e_yoy) else "N/A"
+                    })
                 else:
                     stock_data.update({f"Quarter ({lbl})": "N/A", f"Sales Cr ({lbl})": "N/A", f"Sales YoY % ({lbl})": "N/A", f"PAT Cr ({lbl})": "N/A", f"PAT YoY % ({lbl})": "N/A", f"EPS ({lbl})": "N/A", f"EPS YoY % ({lbl})": "N/A"})
         else:
@@ -187,7 +210,7 @@ for idx, sym in enumerate(symbols_to_process):
             stock_data.update({f"Quarter ({lbl})": "N/A", f"Sales Cr ({lbl})": "N/A", f"Sales YoY % ({lbl})": "N/A", f"PAT Cr ({lbl})": "N/A", f"PAT YoY % ({lbl})": "N/A", f"EPS ({lbl})": "N/A", f"EPS YoY % ({lbl})": "N/A"})
 
     batch_data.append(stock_data)
-    time.sleep(1) # Human-mimicking delay
+    time.sleep(1) 
 
 # ==========================================
 # 6. PUSH BATCH TO GOOGLE SHEETS
