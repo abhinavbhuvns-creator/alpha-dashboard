@@ -68,7 +68,7 @@ if not symbols_to_process:
     print("✅ All stocks fully processed!")
     raise SystemExit(0)
 
-BATCH_LIMIT = 100
+BATCH_LIMIT = 20
 symbols_to_process = symbols_to_process[:BATCH_LIMIT]
 print(f"Processing next batch of {len(symbols_to_process)} stocks...")
 
