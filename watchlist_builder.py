@@ -20,10 +20,12 @@ print("Authenticating with Google Service Account...")
 creds_json = os.environ.get('GOOGLE_CREDENTIALS')
 if not creds_json:
     raise SystemExit("🛑 Error: GOOGLE_CREDENTIALS not found in GitHub Secrets.")
+
 creds_dict = json.loads(creds_json)
 scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(creds)
+
 SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
 master_ss = gc.open_by_url(SINGLE_SHEET_URL)
 target_ss = gc.open_by_url(SINGLE_SHEET_URL)
@@ -90,6 +92,7 @@ except gspread.exceptions.WorksheetNotFound:
 
 scanners = []
 rules_universe = {}
+
 for row in settings_data[1:]:
     if len(row) >= 2:
         scan_name = row[0].strip()
@@ -107,12 +110,15 @@ for sheet in all_tabs:
 
 all_dates = []
 raw_scanner_data = {}
+
 for scan in scanners:
     target_name = scan.replace(" ", "").upper()
     if target_name == "SIXMONTHSTRENGTH" and "6MONTHSTRENGTH" in tab_mapping:
         target_name = "6MONTHSTRENGTH"
+        
     if target_name not in tab_mapping:
         continue
+        
     ws = tab_mapping[target_name]
     data = ws.get_all_values()
     raw_scanner_data[scan] = data
@@ -126,25 +132,31 @@ print(f"Latest Market Date identified as: {latest_trading_date.strftime('%Y-%m-%
 
 universe_tracker = {}
 oneday_tracker = {}
+
 for scan, data in raw_scanner_data.items():
     if len(data) <= 1: continue
     lookback_days = rules_universe.get(scan, 0)
     cutoff_date_univ = latest_trading_date - pd.Timedelta(days=lookback_days)
+    
     for row in data[1:]:
         if len(row) < 2: continue
         stock = row[1].strip().upper() 
         if not stock or stock == "STOCK SYMBOL": continue
+        
         if lookback_days >= 9000:
             if stock not in universe_tracker: universe_tracker[stock] = {s: "No" for s in scanners}
             universe_tracker[stock][scan] = "Yes"
             if stock not in oneday_tracker: oneday_tracker[stock] = {s: "No" for s in scanners}
             oneday_tracker[stock][scan] = "Yes"
             continue
+            
         try: trigger_date = pd.to_datetime(row[0].strip(), format='mixed', dayfirst=True).normalize() 
         except: continue
+        
         if trigger_date >= cutoff_date_univ:
             if stock not in universe_tracker: universe_tracker[stock] = {s: "No" for s in scanners}
             universe_tracker[stock][scan] = "Yes"
+            
         if trigger_date == latest_trading_date:
             if stock not in oneday_tracker: oneday_tracker[stock] = {s: "No" for s in scanners}
             oneday_tracker[stock][scan] = "Yes"
@@ -157,6 +169,9 @@ print(f"Found {len(all_unique_stocks)} unique stocks matching timeframe rules.")
 # ==========================================
 print("Downloading recent technical data for shortlisted stocks...")
 tickers = [s + '.NS' for s in all_unique_stocks]
+# 🟢 Add Benchmark
+if '^CNXSC' not in tickers: tickers.append('^CNXSC')
+
 session = requests.Session()
 session.headers.update({
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -165,6 +180,7 @@ session.headers.update({
 chunk_size = 20
 ticker_chunks = [tickers[i:i + chunk_size] for i in range(0, len(tickers), chunk_size)]
 all_chunks = []
+
 if len(tickers) > 0:
     for i, chunk in enumerate(ticker_chunks):
         print(f" -> Downloading price batch {i+1} of {len(ticker_chunks)}...")
@@ -184,22 +200,34 @@ if len(tickers) > 0:
         if not success:
             raise SystemExit(f"🛑 CRITICAL ERROR: Yahoo permanently blocked batch {i+1}. Run the dashboard again later.")
         time.sleep(5) 
+        
     if all_chunks: data = pd.concat(all_chunks, axis=1)
     else: data = pd.DataFrame()
 else:
     data = pd.DataFrame()
 
+# Extract Benchmark
+if '^CNXSC' in data.columns.levels[0]:
+    bench_close = data['^CNXSC']['Close'].ffill()
+else:
+    bench_close = None
+
 tech_data = {}
-print("Calculating EMAs, Returns, Squeeze Metric, ATR Distances, and ADR...")
+print("Calculating EMAs, Returns, Squeeze Metric, ATR Distances, ADR, and RS Metrics...")
+
 for stock in all_unique_stocks:
     ticker = stock + '.NS'
+    if ticker == '^CNXSC': continue
+    
     try:
         if len(tickers) == 1: df = data.copy()
         else:
             if ticker not in data.columns.levels[0]: continue
             df = data[ticker].copy()
+            
         df = df.dropna(subset=['Close'])
         if df.empty or len(df) < 150: continue
+        
         df['tr1'] = df['High'] - df['Low']
         df['tr2'] = abs(df['High'] - df['Close'].shift(1))
         df['tr3'] = abs(df['Low'] - df['Close'].shift(1))
@@ -207,14 +235,13 @@ for stock in all_unique_stocks:
         atr_14 = df['TR'].rolling(14).mean().iloc[-1]
         close = df['Close'].iloc[-1]
         
-        # 🟢 FIX: 52 WEEK HIGHS/LOWS SHOCK ABSORBER
         high_52w = df['High'].max()
         safe_low_series = df['Low'].replace(0, np.nan)
         low_52w = safe_low_series.min()
         
         pct_off_high = ((close - high_52w) / high_52w) * 100 if pd.notna(high_52w) and high_52w != 0 else np.nan
         pct_above_low = ((close - low_52w) / low_52w) * 100 if pd.notna(low_52w) and low_52w != 0 else np.nan
-
+        
         ema_9 = df['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
         ema_21 = df['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
         ema_50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
@@ -228,12 +255,13 @@ for stock in all_unique_stocks:
         else:
             wk_sma_4 = np.nan
             wk_sma_10 = np.nan
+            
         dist_9 = (close - ema_9) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_21 = (close - ema_21) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_50 = (close - ema_50) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
-
+        
         c_vals = df['Close'].values
         l_vals = df['Low'].values
         active_gaps = []
@@ -250,7 +278,7 @@ for stock in all_unique_stocks:
                     else:
                         active_gaps[k][0] = curr_c
             if len(active_gaps) > 20: active_gaps.pop(0)
-
+            
         nearest_sg_top = np.nan
         if active_gaps:
             min_diff = float('inf')
@@ -259,11 +287,12 @@ for stock in all_unique_stocks:
                 if diff >= 0 and diff < min_diff:
                     min_diff = diff
                     nearest_sg_top = gap[0]
-
+                    
         dist_sg = (close - nearest_sg_top) / atr_14 if pd.notna(atr_14) and atr_14 != 0 and pd.notna(nearest_sg_top) else np.nan
-
+        
         rupee_vol = df['Close'] * df['Volume']
         avg_rupee_vol_20 = (rupee_vol.rolling(window=20).mean().iloc[-1]) / 10000000
+        
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100 
         
@@ -273,8 +302,9 @@ for stock in all_unique_stocks:
         else:
             ret_curr_wk_body = np.nan
             ret_prev_wk_body = np.nan
-
+            
         ret_1m = df['Close'].pct_change(periods=21).iloc[-1] * 100
+        
         if len(df) >= 64:
             close_1m_ago = df['Close'].iloc[-22]
             close_3m_ago = df['Close'].iloc[-64]
@@ -282,10 +312,32 @@ for stock in all_unique_stocks:
         else:
             ret_prev_2m = np.nan
             
-        # 🟢 THE ADR MATH SHOCK ABSORBER
         df['Safe_Low'] = df['Low'].replace(0, np.nan)
         daily_range = (df['High'] / df['Safe_Low']) - 1
         adr_20 = daily_range.replace([np.inf, -np.inf], np.nan).rolling(window=20, min_periods=5).mean().iloc[-1] * 100
+        
+        # 🟢 RS LINE DYNAMIC METRICS
+        if bench_close is not None:
+            aligned_bench = bench_close.reindex(df.index).ffill()
+            rs_raw = (df['Close'] / aligned_bench) * 100
+            
+            rs_52w_high = rs_raw.max()
+            rs_off_high = ((rs_raw.iloc[-1] - rs_52w_high) / rs_52w_high) * 100 if pd.notna(rs_52w_high) and rs_52w_high > 0 else np.nan
+            
+            rs_21ema = rs_raw.ewm(span=21, adjust=False).mean()
+            rs_dist_21ema = ((rs_raw.iloc[-1] - rs_21ema.iloc[-1]) / rs_21ema.iloc[-1]) * 100 if rs_21ema.iloc[-1] > 0 else np.nan
+            
+            rs_1w_chg = rs_raw.pct_change(periods=5).iloc[-1] * 100
+            
+            stock_ret = df['Close'].pct_change()
+            bench_ret = aligned_bench.pct_change()
+            is_out = (stock_ret > bench_ret).astype(int)
+            
+            rs_out_10d = (is_out.tail(10).sum() / 10.0) * 100 if len(is_out) >= 10 else np.nan
+            rs_out_20d = (is_out.tail(20).sum() / 20.0) * 100 if len(is_out) >= 20 else np.nan
+            rs_out_50d = (is_out.tail(50).sum() / 50.0) * 100 if len(is_out) >= 50 else np.nan
+        else:
+            rs_off_high = rs_dist_21ema = rs_1w_chg = rs_out_10d = rs_out_20d = rs_out_50d = np.nan
         
         tech_data[stock] = {
             "close": close, "ema_21": ema_21, "ema_50": ema_50, "ema_150": ema_150,
@@ -294,7 +346,9 @@ for stock in all_unique_stocks:
             "ret_1m": ret_1m, "ret_prev_2m": ret_prev_2m, "adr": adr_20,
             "dist_9": dist_9, "dist_21": dist_21, "dist_50": dist_50,
             "dist_w4": dist_w4, "dist_w10": dist_w10, "dist_sg": dist_sg,
-            "above_low": pct_above_low, "off_high": pct_off_high
+            "above_low": pct_above_low, "off_high": pct_off_high,
+            "rs_off_high": rs_off_high, "rs_dist_21ema": rs_dist_21ema, "rs_1w_chg": rs_1w_chg,
+            "rs_out_10d": rs_out_10d, "rs_out_20d": rs_out_20d, "rs_out_50d": rs_out_50d
         }
     except Exception as e: continue
 
@@ -304,7 +358,10 @@ for stock in all_unique_stocks:
 headers = [
     "Stock Symbol", "Ind Rank", "Industry Group", "ADR %", "Avg Rupee Vol (Cr)",
     "1 Day Return %", "1 Week Return %", "Curr Wk Body %", "Prev Wk Body %", "1 Month Return %", "Prev 2M Return (Ending 1M Ago) %",
-    "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)", "Supp Gap (ATR)", "% above 52W Low", "% off 52W High"
+    "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)", 
+    "Supp Gap (ATR)", "% above 52W Low", "% off 52W High",
+    "RS Line % off 52W High", "% Dist from RS 21 EMA", "RS Line 1W Change %", 
+    "RS Outperform (10D) %", "RS Outperform (20D) %", "RS Outperform (50D) %"
 ] + MS_COLS + scanners
 
 def format_row(stock, scan_dict):
@@ -329,7 +386,13 @@ def format_row(stock, scan_dict):
         round(td['dist_w10'], 2) if pd.notna(td['dist_w10']) else "",
         round(td['dist_sg'], 2) if pd.notna(td['dist_sg']) else "",
         round(td['above_low'], 2) if pd.notna(td['above_low']) else "",
-        round(td['off_high'], 2) if pd.notna(td['off_high']) else ""
+        round(td['off_high'], 2) if pd.notna(td['off_high']) else "",
+        round(td['rs_off_high'], 2) if pd.notna(td['rs_off_high']) else "",
+        round(td['rs_dist_21ema'], 2) if pd.notna(td['rs_dist_21ema']) else "",
+        round(td['rs_1w_chg'], 2) if pd.notna(td['rs_1w_chg']) else "",
+        round(td['rs_out_10d'], 2) if pd.notna(td['rs_out_10d']) else "",
+        round(td['rs_out_20d'], 2) if pd.notna(td['rs_out_20d']) else "",
+        round(td['rs_out_50d'], 2) if pd.notna(td['rs_out_50d']) else ""
     ]
     
     ms_data = ms_dict.get(stock, {})
@@ -381,6 +444,7 @@ def write_to_sheet(tab_name, data):
         ws.clear()
     except gspread.exceptions.WorksheetNotFound:
         ws = target_ss.add_worksheet(title=tab_name, rows="1000", cols="50")
+        
     if len(data) > 1:
         col_letter = get_column_letter(len(headers))
         
@@ -400,5 +464,5 @@ print("\nFinalizing outputs...")
 write_to_sheet("universe", universe_output)
 write_to_sheet("watchlist", watchlist_output)
 write_to_sheet("watchlist one day", oneday_output)
-print("\nDashboard Creation Complete! All 3 tabs are ready in your Target Sheet.")
+
 print("\nDashboard Creation Complete! All 3 tabs are ready in your Target Sheet.")
