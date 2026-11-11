@@ -72,6 +72,10 @@ except Exception as e:
 
 tickers = (df_master['Symbol'].str.strip() + '.NS').tolist()
 
+# 🟢 INJECT BENCHMARK FOR RS RATING DOWNLOAD
+if '^NSEI' not in tickers:
+    tickers.append('^NSEI')
+
 # ==========================================
 # 3. BATCH DOWNLOAD (2 YEARS OF DATA)
 # ==========================================
@@ -93,9 +97,47 @@ for i, chunk in enumerate(ticker_chunks):
 data = pd.concat(all_chunks, axis=1)
 
 # ==========================================
+# 3.5 VECTORIZED RELATIVE STRENGTH RANKING
+# ==========================================
+print("\nCalculating Cross-Sectional RS Ratings (Classic & Webster)...")
+close_data = pd.DataFrame()
+for t in tickers:
+    if t in data.columns.levels[0] and 'Close' in data[t]:
+        close_data[t] = data[t]['Close']
+
+# Separate the benchmark
+nifty = close_data['^NSEI'] if '^NSEI' in close_data.columns else None
+close_data.drop(columns=['^NSEI'], inplace=True, errors='ignore')
+
+if nifty is not None and not close_data.empty:
+    # --- Webster 3-Month Exponential ---
+    rs_line = close_data.div(nifty, axis=0)
+    webster_base = rs_line.ewm(span=63, adjust=False).mean()
+    
+    # --- Classic 12-Month Static ---
+    roc_63 = close_data / close_data.shift(63)
+    roc_126 = close_data / close_data.shift(126)
+    roc_189 = close_data / close_data.shift(189)
+    roc_252 = close_data / close_data.shift(252)
+    classic_base = (roc_63 * 2) + roc_126 + roc_189 + roc_252
+
+    # Isolate Fridays
+    fridays_idx = close_data.index[close_data.index.dayofweek == 4]
+    
+    def calc_1_to_99_rank(row):
+        return (row.rank(pct=True) * 98) + 1
+
+    print(" -> Ranking all stocks historically for every Friday...")
+    webster_friday_ranks = webster_base.loc[fridays_idx].apply(calc_1_to_99_rank, axis=1)
+    classic_friday_ranks = classic_base.loc[fridays_idx].apply(calc_1_to_99_rank, axis=1)
+else:
+    print(" -> Skipping RS Calculation: NIFTY 50 benchmark data missing.")
+    webster_friday_ranks, classic_friday_ranks = pd.DataFrame(), pd.DataFrame()
+
+# ==========================================
 # 4. TECH METRICS & CHART GENERATION
 # ==========================================
-print("Generating Sheet Analytics & Custom Visual Chart PNGs...")
+print("\nGenerating Sheet Analytics & Custom Visual Chart PNGs...")
 tech_metrics = {}
 
 plt.style.use('dark_background')
@@ -106,6 +148,8 @@ plt.rcParams.update({
 })
 
 for ticker in tickers:
+    if ticker == '^NSEI': continue # Skip generating metrics/charts for the index
+    
     stock_sym = ticker.replace('.NS', '')
     try:
         if len(tickers) == 1: df = data.copy()
@@ -119,7 +163,7 @@ for ticker in tickers:
         close = df['Close'].iloc[-1]
         high_52w = df['High'].tail(252).max() 
         
-        # 🟢 FIX: 52-WEEK LOW SHOCK ABSORBER
+        # 🟢 52-WEEK LOW SHOCK ABSORBER
         safe_low_series = df['Low'].replace(0, np.nan)
         low_52w = safe_low_series.tail(252).min() 
         
@@ -129,7 +173,7 @@ for ticker in tickers:
         df['TR'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
         atr_14 = df['TR'].rolling(14).mean().iloc[-1]
         
-        # 🟢 THE ADR MATH SHOCK ABSORBER
+        # 🟢 ADR MATH SHOCK ABSORBER
         df['Safe_Low'] = df['Low'].replace(0, np.nan)
         daily_range = (df['High'] / df['Safe_Low']) - 1
         adr_20 = daily_range.replace([np.inf, -np.inf], np.nan).rolling(window=20, min_periods=5).mean().iloc[-1] * 100
@@ -399,14 +443,55 @@ target_ws.freeze(rows=1)
 target_ws.format('A1:Z1', {'textFormat': {'bold': True}, "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}})
 
 # ==========================================
+# 6.5 WRITE HISTORICAL RS RATINGS TO SHEETS
+# ==========================================
+if not webster_friday_ranks.empty and not classic_friday_ranks.empty:
+    print("\nExporting last 6 Months of Friday RS Ratings to Google Sheets...")
+    
+    # Grab the last 26 Fridays
+    recent_fridays = fridays_idx[-26:]
+    webster_hist = webster_friday_ranks.loc[recent_fridays].round(0).fillna("")
+    classic_hist = classic_friday_ranks.loc[recent_fridays].round(0).fillna("")
+    
+    # Format headers
+    webster_hist.columns = [c.replace('.NS', '') for c in webster_hist.columns]
+    webster_hist.index = webster_hist.index.strftime('%Y-%m-%d')
+    webster_hist = webster_hist.reset_index().rename(columns={'Date': 'Friday_Date'})
+    
+    classic_hist.columns = [c.replace('.NS', '') for c in classic_hist.columns]
+    classic_hist.index = classic_hist.index.strftime('%Y-%m-%d')
+    classic_hist = classic_hist.reset_index().rename(columns={'Date': 'Friday_Date'})
+    
+    # Write Webster History Tab
+    try:
+        w_ws = spreadsheet.worksheet("Webster_3M_History")
+        w_ws.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        w_ws = spreadsheet.add_worksheet(title="Webster_3M_History", rows="100", cols="2100")
+    w_ws.update(values=[webster_hist.columns.values.tolist()] + webster_hist.values.tolist(), range_name='A1')
+    w_ws.freeze(rows=1, cols=1)
+    
+    # Write Classic History Tab
+    try:
+        c_ws = spreadsheet.worksheet("Classic_12M_History")
+        c_ws.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        c_ws = spreadsheet.add_worksheet(title="Classic_12M_History", rows="100", cols="2100")
+    c_ws.update(values=[classic_hist.columns.values.tolist()] + classic_hist.values.tolist(), range_name='A1')
+    c_ws.freeze(rows=1, cols=1)
+
+# ==========================================
 # 7. CALCULATE 6-MONTH MARKET BREADTH
 # ==========================================
 print("\nCalculating 6-Month Market Breadth History...")
 try:
-    close_df = pd.DataFrame({t: data[t]['Close'] for t in tickers if t in data.columns.levels[0]})
-    vol_df = pd.DataFrame({t: data[t]['Volume'] for t in tickers if t in data.columns.levels[0]})
-    high_df = pd.DataFrame({t: data[t]['High'] for t in tickers if t in data.columns.levels[0]})
-    low_df = pd.DataFrame({t: data[t]['Low'] for t in tickers if t in data.columns.levels[0]})
+    # Filter tickers to remove the benchmark index if it was added
+    valid_tickers = [t for t in tickers if t in data.columns.levels[0] and t != '^NSEI']
+    
+    close_df = pd.DataFrame({t: data[t]['Close'] for t in valid_tickers})
+    vol_df = pd.DataFrame({t: data[t]['Volume'] for t in valid_tickers})
+    high_df = pd.DataFrame({t: data[t]['High'] for t in valid_tickers})
+    low_df = pd.DataFrame({t: data[t]['Low'] for t in valid_tickers})
 
     prev_close = close_df.shift(1)
     up_counts = (close_df > prev_close).sum(axis=1)
@@ -481,7 +566,7 @@ try:
     sym_col = next((c for c in df_etf_stocks.columns if 'symbol' in c.lower() or 'ticker' in c.lower()), None)
     if sym_col:
         etf_tickers = (df_etf_stocks[sym_col].astype(str).str.strip().str.upper() + '.NS').tolist()
-        valid_tickers = [t for t in etf_tickers if t in data.columns.levels[0]]
+        valid_tickers = [t for t in etf_tickers if t in data.columns.levels[0] and t != '^NSEI']
         
         if valid_tickers:
             df_hist = data[valid_tickers].tail(252).ffill().bfill()
