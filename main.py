@@ -72,9 +72,9 @@ except Exception as e:
 
 tickers = (df_master['Symbol'].str.strip() + '.NS').tolist()
 
-# 🟢 INJECT BENCHMARK FOR RS RATING DOWNLOAD
-if '^NSEI' not in tickers:
-    tickers.append('^NSEI')
+# 🟢 INJECT BENCHMARKS FOR RS RATING DOWNLOAD
+if '^NSEI' not in tickers: tickers.append('^NSEI')
+if '^CNXSC' not in tickers: tickers.append('^CNXSC')
 
 # ==========================================
 # 3. BATCH DOWNLOAD (2 YEARS OF DATA)
@@ -107,23 +107,18 @@ for t in tickers:
 
 # Separate the benchmark
 nifty = close_data['^NSEI'] if '^NSEI' in close_data.columns else None
-close_data.drop(columns=['^NSEI'], inplace=True, errors='ignore')
+close_data.drop(columns=['^NSEI', '^CNXSC'], inplace=True, errors='ignore')
 
 if nifty is not None and not close_data.empty:
-    # --- Webster 3-Month Exponential (Method A: Pure Momentum) ---
-    # Calculate daily percent returns
     daily_returns = close_data.pct_change()
-    # Apply the 63-day EMA to returns, heavily weighting the most recent action
     webster_base = daily_returns.ewm(span=63, adjust=False).mean()
     
-    # --- Classic 12-Month Static ---
     roc_63 = close_data / close_data.shift(63)
     roc_126 = close_data / close_data.shift(126)
     roc_189 = close_data / close_data.shift(189)
     roc_252 = close_data / close_data.shift(252)
     classic_base = (roc_63 * 2) + roc_126 + roc_189 + roc_252
 
-    # Isolate Fridays
     fridays_idx = close_data.index[close_data.index.dayofweek == 4]
     
     def calc_1_to_99_rank(row):
@@ -135,6 +130,14 @@ if nifty is not None and not close_data.empty:
 else:
     print(" -> Skipping RS Calculation: NIFTY 50 benchmark data missing.")
     webster_friday_ranks, classic_friday_ranks = pd.DataFrame(), pd.DataFrame()
+
+# Extract Benchmark for custom RS Lines
+if '^CNXSC' in data.columns.levels[0]:
+    bench_close = data['^CNXSC']['Close'].ffill()
+elif '^NSEI' in data.columns.levels[0]:
+    bench_close = data['^NSEI']['Close'].ffill()
+else:
+    bench_close = None
 
 # ==========================================
 # 4. TECH METRICS & CHART GENERATION
@@ -150,7 +153,7 @@ plt.rcParams.update({
 })
 
 for ticker in tickers:
-    if ticker == '^NSEI': continue # Skip generating metrics/charts for the index
+    if ticker in ['^NSEI', '^CNXSC']: continue # Skip generating metrics/charts for indexes
     
     stock_sym = ticker.replace('.NS', '')
     try:
@@ -165,7 +168,6 @@ for ticker in tickers:
         close = df['Close'].iloc[-1]
         high_52w = df['High'].tail(252).max() 
         
-        # 🟢 52-WEEK LOW SHOCK ABSORBER
         safe_low_series = df['Low'].replace(0, np.nan)
         low_52w = safe_low_series.tail(252).min() 
         
@@ -175,7 +177,6 @@ for ticker in tickers:
         df['TR'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
         atr_14 = df['TR'].rolling(14).mean().iloc[-1]
         
-        # 🟢 ADR MATH SHOCK ABSORBER
         df['Safe_Low'] = df['Low'].replace(0, np.nan)
         daily_range = (df['High'] / df['Safe_Low']) - 1
         adr_20 = daily_range.replace([np.inf, -np.inf], np.nan).rolling(window=20, min_periods=5).mean().iloc[-1] * 100
@@ -253,7 +254,6 @@ for ticker in tickers:
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100 
         
-        # 🟢 CANDLE BODY PERCENTAGE LOGIC
         if len(weekly_df) >= 2:
             ret_curr_wk_body = ((weekly_df['Close'].iloc[-1] / weekly_df['Open'].iloc[-1]) - 1) * 100
             ret_prev_wk_body = ((weekly_df['Close'].iloc[-2] / weekly_df['Open'].iloc[-2]) - 1) * 100
@@ -266,7 +266,6 @@ for ticker in tickers:
         ret_6m = df['Close'].pct_change(periods=126).iloc[-1] * 100 if len(df) >= 127 else None
         dist_ema21 = ((close - df['ema21'].iloc[-1]) / df['ema21'].iloc[-1]) * 100
         
-        # 🟢 52 WEEK OFF/ABOVE METRICS
         dist_high = ((close - high_52w) / high_52w) * 100
         dist_low = ((close - low_52w) / low_52w) * 100
 
@@ -276,6 +275,29 @@ for ticker in tickers:
             ret_past_2m_till_last_month = ((close_1m_ago / close_3m_ago) - 1) * 100
         else:
             ret_past_2m_till_last_month = None
+            
+        # 🟢 RS LINE DYNAMIC METRICS
+        if bench_close is not None:
+            aligned_bench = bench_close.reindex(df.index).ffill()
+            rs_raw = (df['Close'] / aligned_bench) * 100
+            
+            rs_52w_high = rs_raw.tail(252).max()
+            rs_off_high = ((rs_raw.iloc[-1] - rs_52w_high) / rs_52w_high) * 100 if pd.notna(rs_52w_high) and rs_52w_high > 0 else np.nan
+            
+            rs_21ema = rs_raw.ewm(span=21, adjust=False).mean()
+            rs_dist_21ema = ((rs_raw.iloc[-1] - rs_21ema.iloc[-1]) / rs_21ema.iloc[-1]) * 100 if rs_21ema.iloc[-1] > 0 else np.nan
+            
+            rs_1w_chg = rs_raw.pct_change(periods=5).iloc[-1] * 100
+            
+            stock_ret = df['Close'].pct_change()
+            bench_ret = aligned_bench.pct_change()
+            is_outperforming = (stock_ret > bench_ret).astype(int)
+            
+            rs_out_10d = (is_outperforming.tail(10).sum() / 10.0) * 100 if len(is_outperforming) >= 10 else np.nan
+            rs_out_20d = (is_outperforming.tail(20).sum() / 20.0) * 100 if len(is_outperforming) >= 20 else np.nan
+            rs_out_50d = (is_outperforming.tail(50).sum() / 50.0) * 100 if len(is_outperforming) >= 50 else np.nan
+        else:
+            rs_off_high = rs_dist_21ema = rs_1w_chg = rs_out_10d = rs_out_20d = rs_out_50d = np.nan
 
         tech_metrics[stock_sym] = {
             "ADR %": round(adr_20, 2) if pd.notna(adr_20) else "",
@@ -306,6 +328,12 @@ for ticker in tickers:
             "4W SMA (ATR)": round(dist_w4, 2) if pd.notna(dist_w4) else "",
             "10W SMA (ATR)": round(dist_w10, 2) if pd.notna(dist_w10) else "",
             "Supp Gap (ATR)": round(dist_sg, 2) if pd.notna(dist_sg) else "",
+            "RS Line % off 52W High": round(rs_off_high, 2) if pd.notna(rs_off_high) else "",
+            "% Dist from RS 21 EMA": round(rs_dist_21ema, 2) if pd.notna(rs_dist_21ema) else "",
+            "RS Line 1W Change %": round(rs_1w_chg, 2) if pd.notna(rs_1w_chg) else "",
+            "RS Outperform (10D) %": round(rs_out_10d, 2) if pd.notna(rs_out_10d) else "",
+            "RS Outperform (20D) %": round(rs_out_20d, 2) if pd.notna(rs_out_20d) else "",
+            "RS Outperform (50D) %": round(rs_out_50d, 2) if pd.notna(rs_out_50d) else "",
             "Webster RS (Current)": int(webster_friday_ranks[ticker].iloc[-1]) if not webster_friday_ranks.empty and ticker in webster_friday_ranks.columns and not pd.isna(webster_friday_ranks[ticker].iloc[-1]) else "",
             "Classic RS (Current)": int(classic_friday_ranks[ticker].iloc[-1]) if not classic_friday_ranks.empty and ticker in classic_friday_ranks.columns and not pd.isna(classic_friday_ranks[ticker].iloc[-1]) else "",
         }
@@ -354,8 +382,8 @@ for ticker in tickers:
 # ==========================================
 print("\nGenerating Nifty 50 and Smallcap Index Charts...")
 try:
-    idx_data = yf.download(['^NSEI', '^CRSLDX'], period="1y", group_by="ticker", progress=False)
-    for idx_sym, file_name in [('^NSEI', 'NIFTY50'), ('^CRSLDX', 'SMALLCAP250')]:
+    idx_data = yf.download(['^NSEI', '^CNXSC'], period="1y", group_by="ticker", progress=False)
+    for idx_sym, file_name in [('^NSEI', 'NIFTY50'), ('^CNXSC', 'SMALLCAP100')]:
         if idx_sym in idx_data.columns.levels[0]:
             df_idx = idx_data[idx_sym].dropna(subset=['Close']).tail(65)
        
@@ -452,12 +480,10 @@ target_ws.format('A1:Z1', {'textFormat': {'bold': True}, "backgroundColor": {"re
 if not webster_friday_ranks.empty and not classic_friday_ranks.empty:
     print("\nExporting last 6 Months of Friday RS Ratings to Google Sheets...")
     
-    # Grab the last 26 Fridays
     recent_fridays = fridays_idx[-26:]
     webster_hist = webster_friday_ranks.loc[recent_fridays].round(0).fillna("")
     classic_hist = classic_friday_ranks.loc[recent_fridays].round(0).fillna("")
     
-    # Format headers
     webster_hist.columns = [c.replace('.NS', '') for c in webster_hist.columns]
     webster_hist.index = webster_hist.index.strftime('%Y-%m-%d')
     webster_hist = webster_hist.reset_index().rename(columns={'Date': 'Friday_Date'})
@@ -466,7 +492,6 @@ if not webster_friday_ranks.empty and not classic_friday_ranks.empty:
     classic_hist.index = classic_hist.index.strftime('%Y-%m-%d')
     classic_hist = classic_hist.reset_index().rename(columns={'Date': 'Friday_Date'})
     
-    # Write Webster History Tab
     try:
         w_ws = spreadsheet.worksheet("Webster_3M_History")
         w_ws.clear()
@@ -475,7 +500,6 @@ if not webster_friday_ranks.empty and not classic_friday_ranks.empty:
     w_ws.update(values=[webster_hist.columns.values.tolist()] + webster_hist.values.tolist(), range_name='A1')
     w_ws.freeze(rows=1, cols=1)
     
-    # Write Classic History Tab
     try:
         c_ws = spreadsheet.worksheet("Classic_12M_History")
         c_ws.clear()
@@ -489,8 +513,7 @@ if not webster_friday_ranks.empty and not classic_friday_ranks.empty:
 # ==========================================
 print("\nCalculating 6-Month Market Breadth History...")
 try:
-    # Filter tickers to remove the benchmark index if it was added
-    valid_tickers = [t for t in tickers if t in data.columns.levels[0] and t != '^NSEI']
+    valid_tickers = [t for t in tickers if t in data.columns.levels[0] and t not in ['^NSEI', '^CNXSC']]
     
     close_df = pd.DataFrame({t: data[t]['Close'] for t in valid_tickers})
     vol_df = pd.DataFrame({t: data[t]['Volume'] for t in valid_tickers})
@@ -570,7 +593,7 @@ try:
     sym_col = next((c for c in df_etf_stocks.columns if 'symbol' in c.lower() or 'ticker' in c.lower()), None)
     if sym_col:
         etf_tickers = (df_etf_stocks[sym_col].astype(str).str.strip().str.upper() + '.NS').tolist()
-        valid_tickers = [t for t in etf_tickers if t in data.columns.levels[0] and t != '^NSEI']
+        valid_tickers = [t for t in etf_tickers if t in data.columns.levels[0] and t not in ['^NSEI', '^CNXSC']]
         
         if valid_tickers:
             df_hist = data[valid_tickers].tail(252).ffill().bfill()
