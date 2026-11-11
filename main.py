@@ -110,9 +110,11 @@ nifty = close_data['^NSEI'] if '^NSEI' in close_data.columns else None
 close_data.drop(columns=['^NSEI'], inplace=True, errors='ignore')
 
 if nifty is not None and not close_data.empty:
-    # --- Webster 3-Month Exponential ---
-    rs_line = close_data.div(nifty, axis=0)
-    webster_base = rs_line.ewm(span=63, adjust=False).mean()
+    # --- Webster 3-Month Exponential (Method A: Pure Momentum) ---
+    # Calculate daily percent returns
+    daily_returns = close_data.pct_change()
+    # Apply the 63-day EMA to returns, heavily weighting the most recent action
+    webster_base = daily_returns.ewm(span=63, adjust=False).mean()
     
     # --- Classic 12-Month Static ---
     roc_63 = close_data / close_data.shift(63)
@@ -303,7 +305,9 @@ for ticker in tickers:
             "50 EMA (ATR)": round(dist_50, 2) if pd.notna(dist_50) else "",
             "4W SMA (ATR)": round(dist_w4, 2) if pd.notna(dist_w4) else "",
             "10W SMA (ATR)": round(dist_w10, 2) if pd.notna(dist_w10) else "",
-            "Supp Gap (ATR)": round(dist_sg, 2) if pd.notna(dist_sg) else ""
+            "Supp Gap (ATR)": round(dist_sg, 2) if pd.notna(dist_sg) else "",
+            "Webster RS (Current)": int(webster_friday_ranks[ticker].iloc[-1]) if not webster_friday_ranks.empty and ticker in webster_friday_ranks.columns and not pd.isna(webster_friday_ranks[ticker].iloc[-1]) else "",
+            "Classic RS (Current)": int(classic_friday_ranks[ticker].iloc[-1]) if not classic_friday_ranks.empty and ticker in classic_friday_ranks.columns and not pd.isna(classic_friday_ranks[ticker].iloc[-1]) else "",
         }
 
         # STATIC CHART GEN
