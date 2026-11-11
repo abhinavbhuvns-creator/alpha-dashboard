@@ -28,7 +28,6 @@ gc = gspread.authorize(creds)
 # 2. READ UNIFIED SHEET & MARKETSMITH
 # ==========================================
 SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
-
 master_ss = gc.open_by_url(SINGLE_SHEET_URL)
 target_ss = gc.open_by_url(SINGLE_SHEET_URL)
 
@@ -52,7 +51,6 @@ except Exception as e:
     raise SystemExit(f"🛑 Error reading Master Data: {e}")
 
 master_df = pd.DataFrame(master_data)
-
 if 'Symbol' not in master_df.columns:
     raise SystemExit("🛑 Error: Could not find 'Symbol' column in the Master Sheet.")
 
@@ -70,6 +68,9 @@ except Exception as e:
     ms_dict = {}
 
 tickers = (master_df['Symbol'].str.strip() + '.NS').tolist()
+# 🟢 Add Benchmark
+if '^CNXSC' not in tickers: tickers.append('^CNXSC')
+
 industry_map = master_df.set_index('Symbol')['Industry Group'].to_dict()
 volume_map = master_df.set_index('Symbol')['Avg_Rupee_Volume_Crores'].to_dict()
 
@@ -106,21 +107,47 @@ vol_df.index = vol_df.index.tz_localize(None)
 low_df.index = low_df.index.tz_localize(None)
 high_df.index = high_df.index.tz_localize(None)
 
+# 🟢 Extract Benchmark and separate it from main stock logic
+if '^CNXSC' in close_df.columns:
+    bench_close = close_df['^CNXSC'].ffill()
+    
+    # Pre-calculate RS Line Matrix for entire market
+    rs_raw_df = close_df.div(bench_close, axis=0) * 100
+    rs_52w_max_df = rs_raw_df.rolling(window=252, min_periods=200).max()
+    rs_off_high_df = ((rs_raw_df - rs_52w_max_df) / rs_52w_max_df) * 100
+    
+    rs_21ema_df = rs_raw_df.ewm(span=21, adjust=False).mean()
+    rs_dist_21ema_df = ((rs_raw_df - rs_21ema_df) / rs_21ema_df) * 100
+    
+    rs_1w_chg_df = rs_raw_df.pct_change(periods=5, fill_method=None) * 100
+    
+    stock_ret_df = close_df.pct_change(fill_method=None)
+    bench_ret_df = bench_close.pct_change(fill_method=None)
+    
+    outperf_df = stock_ret_df.gt(bench_ret_df, axis=0).astype(int)
+    rs_out_10d_df = (outperf_df.rolling(10).sum() / 10.0) * 100
+    rs_out_20d_df = (outperf_df.rolling(20).sum() / 20.0) * 100
+    rs_out_50d_df = (outperf_df.rolling(50).sum() / 50.0) * 100
+else:
+    bench_close = None
+
+# Drop benchmark so it isn't scanned as a normal stock
+close_df.drop(columns=['^CNXSC'], inplace=True, errors='ignore')
+vol_df.drop(columns=['^CNXSC'], inplace=True, errors='ignore')
+low_df.drop(columns=['^CNXSC'], inplace=True, errors='ignore')
+high_df.drop(columns=['^CNXSC'], inplace=True, errors='ignore')
+
 # ==========================================
 # 4. CRUNCH TECHNICALS, POCKET PIVOT & ATR
 # ==========================================
 print("Crunching technical criteria, ATR Distances, and Weekly Pocket Pivots...")
-
-# 🟢 FIX: 52-WEEK LOW SHOCK ABSORBER
 safe_low = low_df.replace(0, np.nan)
 low_52w = safe_low.rolling(window=252, min_periods=200).min()
 max_high_252 = high_df.rolling(window=252, min_periods=200).max()
-
 avg_vol_50 = vol_df.rolling(window=50).mean()
 max_vol_252 = vol_df.rolling(window=252, min_periods=200).max()
 prev_max_close_252 = close_df.shift(1).rolling(window=252, min_periods=1).max()
 
-# 🟢 THE ADR MATH SHOCK ABSORBER
 raw_daily_range = (high_df / safe_low) - 1
 adr_20_df = raw_daily_range.replace([np.inf, -np.inf], np.nan).rolling(window=20, min_periods=5).mean() * 100
 
@@ -148,40 +175,36 @@ dist_w10_df = (close_df - daily_sma_10_df) / atr_14_df
 
 pp_mask_df = pd.DataFrame(False, index=close_df.index, columns=close_df.columns)
 
-for ticker in tickers:
+for ticker in close_df.columns:
     if ticker not in data.columns.levels[0]: continue
     df_tick = data[ticker].dropna(subset=['Close'])
     if len(df_tick) < 60: continue
-
     weekly_last_dates = df_tick.reset_index().groupby(pd.Grouper(key='Date', freq='W-FRI'))['Date'].last().dropna()
-
+    
     weekly_df = df_tick.resample('W-FRI').agg({
         'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
     }).dropna()
-
     weekly_df['ActualDate'] = weekly_last_dates.values
-
+    
     ema_10 = weekly_df['Close'].ewm(span=10, adjust=False).mean()
     ema_30 = weekly_df['Close'].ewm(span=30, adjust=False).mean()
     cond1 = ema_10 > ema_30
-
+    
     wk_range = weekly_df['High'] - weekly_df['Low']
     wk_range = wk_range.replace(0, np.nan)
     wcr = ((weekly_df['Close'] - weekly_df['Low']) / wk_range) * 100
     cond2 = wcr >= 40
-
+    
     sma_vol = weekly_df['Volume'].rolling(10).mean()
     cond3 = weekly_df['Volume'] > sma_vol
-
+    
     is_down_week = weekly_df['Close'].diff() < 0
     down_vols = weekly_df['Volume'].where(is_down_week, 0)
     max_down_vol_10w = down_vols.shift(1).rolling(10).max()
     cond4 = weekly_df['Volume'] > max_down_vol_10w
-
     cond5 = weekly_df['Close'] > weekly_df['Close'].shift(1)
-
+    
     pp_weekly = cond1 & cond2 & cond3 & cond4 & cond5
-
     trigger_dates = weekly_df.loc[pp_weekly, 'ActualDate'].dropna()
     if not trigger_dates.empty:
         pp_mask_df.loc[trigger_dates, ticker] = True
@@ -217,34 +240,35 @@ print(f"Total unique stocks passing Base Rules + ANY specific scan: {len(all_sho
 # ==========================================
 print("Verifying Volume limits, Market Cap, and compiling final metrics...")
 results = {name: [] for name in scanner_conditions.keys()}
-adr_6m = adr_20_df.loc[time_mask]
 
+adr_6m = adr_20_df.loc[time_mask]
 mcap_cache = {}
 
 for ticker in all_shortlisted:
     stock_name = ticker.replace('.NS', '')
     avg_vol_crores = volume_map.get(stock_name, 0)
-
+    
     if avg_vol_crores < 1.0:
         continue
-
+        
     absolute_rupee_vol = avg_vol_crores * 10000000
-
+    
     try:
         if ticker not in mcap_cache:
             mcap_cache[ticker] = yf.Ticker(ticker).info.get('marketCap', 0)
+            
         market_cap = mcap_cache[ticker]
-
+        
         if market_cap > 0:
             for scan_name, mask in scanner_masks.items():
                 if ticker in mask.columns and mask[ticker].any():
                     valid_dates = mask[ticker][mask[ticker]].index
                     ratio = absolute_rupee_vol / market_cap
-
+                    
                     if ratio >= 0.0025:
                         latest_date_obj = valid_dates.max()
                         latest_date_str = latest_date_obj.strftime('%Y-%m-%d')
-
+                        
                         trigger_adr = adr_6m.loc[latest_date_obj, ticker]
                         
                         d9 = dist_9_df.loc[latest_date_obj, ticker]
@@ -252,9 +276,10 @@ for ticker in all_shortlisted:
                         d50 = dist_50_df.loc[latest_date_obj, ticker]
                         dw4 = dist_w4_df.loc[latest_date_obj, ticker]
                         dw10 = dist_w10_df.loc[latest_date_obj, ticker]
-
+                        
                         c_series = close_df.loc[:latest_date_obj, ticker].dropna().values
                         l_series = low_df.loc[:latest_date_obj, ticker].dropna().values
+                        
                         active_gaps = []
                         for j in range(1, len(c_series)):
                             prev_c = c_series[j-1]
@@ -269,7 +294,7 @@ for ticker in all_shortlisted:
                                     else:
                                         active_gaps[k][0] = curr_c
                             if len(active_gaps) > 20: active_gaps.pop(0)
-
+                            
                         nearest_sg_top = np.nan
                         if active_gaps:
                             final_c = c_series[-1]
@@ -279,15 +304,26 @@ for ticker in all_shortlisted:
                                 if diff >= 0 and diff < min_diff:
                                     min_diff = diff
                                     nearest_sg_top = gap[0]
-
+                                    
                         atr_val = atr_14_df.loc[latest_date_obj, ticker]
                         dsg = (final_c - nearest_sg_top) / atr_val if pd.notna(atr_val) and atr_val != 0 and pd.notna(nearest_sg_top) else np.nan
-
+                        
                         latest_high = max_high_252.loc[latest_date_obj, ticker]
                         latest_low = low_52w.loc[latest_date_obj, ticker]
                         
                         pct_above_low = ((final_c - latest_low) / latest_low) * 100 if pd.notna(latest_low) and latest_low != 0 else np.nan
                         pct_off_high = ((final_c - latest_high) / latest_high) * 100 if pd.notna(latest_high) and latest_high != 0 else np.nan
+                        
+                        # 🟢 Fetch Pre-Calculated RS Stats for this tick
+                        if bench_close is not None:
+                            d_rs_off_high = rs_off_high_df.loc[latest_date_obj, ticker]
+                            d_rs_dist_21 = rs_dist_21ema_df.loc[latest_date_obj, ticker]
+                            d_rs_1w = rs_1w_chg_df.loc[latest_date_obj, ticker]
+                            d_rs_10d = rs_out_10d_df.loc[latest_date_obj, ticker]
+                            d_rs_20d = rs_out_20d_df.loc[latest_date_obj, ticker]
+                            d_rs_50d = rs_out_50d_df.loc[latest_date_obj, ticker]
+                        else:
+                            d_rs_off_high = d_rs_dist_21 = d_rs_1w = d_rs_10d = d_rs_20d = d_rs_50d = np.nan
 
                         industry = industry_map.get(stock_name, "Unclassified")
                         
@@ -297,7 +333,7 @@ for ticker in all_shortlisted:
                             val = ms_data.get(col, "N/A")
                             if val == "": val = "N/A"
                             ms_row.append(val)
-
+                            
                         results[scan_name].append([
                             latest_date_str, stock_name, industry, avg_vol_crores,
                             round(trigger_adr, 2) if pd.notna(trigger_adr) else "N/A",
@@ -308,8 +344,15 @@ for ticker in all_shortlisted:
                             round(dw10, 2) if pd.notna(dw10) else "N/A",
                             round(dsg, 2) if pd.notna(dsg) else "N/A",
                             round(pct_above_low, 2) if pd.notna(pct_above_low) else "N/A",
-                            round(pct_off_high, 2) if pd.notna(pct_off_high) else "N/A"
+                            round(pct_off_high, 2) if pd.notna(pct_off_high) else "N/A",
+                            round(d_rs_off_high, 2) if pd.notna(d_rs_off_high) else "N/A",
+                            round(d_rs_dist_21, 2) if pd.notna(d_rs_dist_21) else "N/A",
+                            round(d_rs_1w, 2) if pd.notna(d_rs_1w) else "N/A",
+                            round(d_rs_10d, 2) if pd.notna(d_rs_10d) else "N/A",
+                            round(d_rs_20d, 2) if pd.notna(d_rs_20d) else "N/A",
+                            round(d_rs_50d, 2) if pd.notna(d_rs_50d) else "N/A"
                         ] + ms_row)
+
     except Exception as e:
         continue
 
@@ -318,9 +361,13 @@ for ticker in all_shortlisted:
 # ==========================================
 print("\nExporting all formatted data to Unified Google Sheet...")
 
+# 🟢 Add New Dynamic RS Line Headers
 headers = [
     "Trigger Date", "Stock Symbol", "Industry Group", "Avg Rupee Vol (Cr)", "ADR %",
-    "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)", "Supp Gap (ATR)", "% above 52W Low", "% off 52W High"
+    "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)", 
+    "Supp Gap (ATR)", "% above 52W Low", "% off 52W High",
+    "RS Line % off 52W High", "% Dist from RS 21 EMA", "RS Line 1W Change %", 
+    "RS Outperform (10D) %", "RS Outperform (20D) %", "RS Outperform (50D) %"
 ] + MS_COLS
 
 def get_column_letter(col_idx):
@@ -338,10 +385,10 @@ for tab_name, matched_stocks in results.items():
         worksheet.clear()
     except gspread.exceptions.WorksheetNotFound:
         worksheet = target_ss.add_worksheet(title=tab_name, rows="1000", cols="50")
-
+        
     matched_stocks.sort(key=lambda x: x[0], reverse=True)
     sheet_output = [headers] + matched_stocks
-
+    
     if len(sheet_output) > 1:
         worksheet.update(values=sheet_output, range_name='A1', value_input_option='USER_ENTERED')
         worksheet.format(f'A1:{dynamic_col_letter}1', {
