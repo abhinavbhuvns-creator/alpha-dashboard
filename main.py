@@ -72,9 +72,9 @@ except Exception as e:
 
 tickers = (df_master['Symbol'].str.strip() + '.NS').tolist()
 
-# 🟢 INJECT BENCHMARKS FOR RS RATING DOWNLOAD
-if '^NSEI' not in tickers: tickers.append('^NSEI')
-if '^CNXSC' not in tickers: tickers.append('^CNXSC')
+# 🟢 INJECT BENCHMARKS SAFELY TO INDEX 0 TO PREVENT YFINANCE BUG
+if '^CNXSC' not in tickers: tickers.insert(0, '^CNXSC')
+if '^NSEI' not in tickers: tickers.insert(0, '^NSEI')
 
 # ==========================================
 # 3. BATCH DOWNLOAD (2 YEARS OF DATA)
@@ -153,7 +153,7 @@ plt.rcParams.update({
 })
 
 for ticker in tickers:
-    if ticker in ['^NSEI', '^CNXSC']: continue # Skip generating metrics/charts for indexes
+    if ticker in ['^NSEI', '^CNXSC']: continue 
     
     stock_sym = ticker.replace('.NS', '')
     try:
@@ -198,7 +198,6 @@ for ticker in tickers:
         df['ema21'] = df['Close'].ewm(span=21, adjust=False).mean()
         df['ema50'] = df['Close'].ewm(span=50, adjust=False).mean()
    
-        # WEEKLY CANDLES
         weekly_df = df.resample('W-FRI').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
         
         if len(weekly_df) >= 10:
@@ -221,7 +220,6 @@ for ticker in tickers:
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
 
-        # SUPPORT GAPS
         c_vals = df['Close'].values
         l_vals = df['Low'].values
         active_gaps = []
@@ -299,6 +297,7 @@ for ticker in tickers:
         else:
             rs_off_high = rs_dist_21ema = rs_1w_chg = rs_out_10d = rs_out_20d = rs_out_50d = np.nan
 
+        # 🟢 INJECTING ALL NEW COLUMNS INTO THE DATABASE EXPORT
         tech_metrics[stock_sym] = {
             "ADR %": round(adr_20, 2) if pd.notna(adr_20) else "",
             "RVOL (20D)": round(rvol_20, 2) if pd.notna(rvol_20) else "",
@@ -457,7 +456,6 @@ df_tech = pd.DataFrame.from_dict(tech_metrics, orient='index').reset_index()
 df_tech.rename(columns={'index': 'Symbol'}, inplace=True)
 df_final = pd.merge(df_master, df_tech, on='Symbol', how='left').fillna("")
 
-# 🟢 MERGE MARKETSMITH DATA
 if not df_ms.empty:
     df_final = pd.merge(df_final, df_ms, on='Symbol', how='left')
     for col in [c for c in df_ms.columns if c != 'Symbol']:
