@@ -68,14 +68,30 @@ except Exception as e:
     ms_dict = {}
 
 tickers = (master_df['Symbol'].str.strip() + '.NS').tolist()
-# 🟢 Add Benchmark
-if '^CNXSC' not in tickers: tickers.append('^CNXSC')
-
 industry_map = master_df.set_index('Symbol')['Industry Group'].to_dict()
 volume_map = master_df.set_index('Symbol')['Avg_Rupee_Volume_Crores'].to_dict()
 
 # ==========================================
-# 3. VECTORIZED DATA DOWNLOAD (SAFE BATCHED)
+# 3. BULLETPROOF BENCHMARK FETCHER
+# ==========================================
+print("\nFetching Benchmark Index separately to guarantee data integrity...")
+bench_close = None
+for b in ['^CNXSC', '^CRSLDX', '^NSEI']:
+    try:
+        b_data = yf.download(b, period="2y", progress=False)
+        if not b_data.empty and 'Close' in b_data:
+            bench_close = b_data['Close']
+            if isinstance(bench_close, pd.DataFrame): 
+                bench_close = bench_close.iloc[:, 0]
+            bench_close = bench_close.ffill()
+            bench_close.index = pd.to_datetime(bench_close.index).tz_localize(None).normalize()
+            print(f" -> Successfully fetched benchmark: {b}")
+            break
+    except Exception:
+        continue
+
+# ==========================================
+# 4. VECTORIZED DATA DOWNLOAD (SAFE BATCHED)
 # ==========================================
 def chunker(seq, size):
     return (seq[pos:pos + size] for pos in range(0, len(seq), size))
@@ -94,7 +110,7 @@ for i, chunk in enumerate(ticker_chunks):
 data = pd.concat(all_chunks, axis=1)
 
 if not data.empty:
-    data.index = pd.to_datetime(data.index).normalize()
+    data.index = pd.to_datetime(data.index).tz_localize(None).normalize()
     data = data.groupby(data.index).max()
 
 close_df = pd.DataFrame({t: data[t]['Close'] for t in tickers if t in data.columns.levels[0]}).ffill()
@@ -102,17 +118,11 @@ vol_df = pd.DataFrame({t: data[t]['Volume'] for t in tickers if t in data.column
 low_df = pd.DataFrame({t: data[t]['Low'] for t in tickers if t in data.columns.levels[0]}).ffill()
 high_df = pd.DataFrame({t: data[t]['High'] for t in tickers if t in data.columns.levels[0]}).ffill()
 
-close_df.index = close_df.index.tz_localize(None)
-vol_df.index = vol_df.index.tz_localize(None)
-low_df.index = low_df.index.tz_localize(None)
-high_df.index = high_df.index.tz_localize(None)
-
-# 🟢 Extract Benchmark and separate it from main stock logic
-if '^CNXSC' in close_df.columns:
-    bench_close = close_df['^CNXSC'].ffill()
+# 🟢 Align Benchmark and Calc Matrix for entire market
+if bench_close is not None:
+    aligned_bench = bench_close.reindex(close_df.index).ffill()
     
-    # Pre-calculate RS Line Matrix for entire market
-    rs_raw_df = close_df.div(bench_close, axis=0) * 100
+    rs_raw_df = close_df.div(aligned_bench, axis=0) * 100
     rs_52w_max_df = rs_raw_df.rolling(window=252, min_periods=200).max()
     rs_off_high_df = ((rs_raw_df - rs_52w_max_df) / rs_52w_max_df) * 100
     
@@ -122,23 +132,15 @@ if '^CNXSC' in close_df.columns:
     rs_1w_chg_df = rs_raw_df.pct_change(periods=5, fill_method=None) * 100
     
     stock_ret_df = close_df.pct_change(fill_method=None)
-    bench_ret_df = bench_close.pct_change(fill_method=None)
+    bench_ret_df = aligned_bench.pct_change(fill_method=None)
     
     outperf_df = stock_ret_df.gt(bench_ret_df, axis=0).astype(int)
     rs_out_10d_df = (outperf_df.rolling(10).sum() / 10.0) * 100
     rs_out_20d_df = (outperf_df.rolling(20).sum() / 20.0) * 100
     rs_out_50d_df = (outperf_df.rolling(50).sum() / 50.0) * 100
-else:
-    bench_close = None
-
-# Drop benchmark so it isn't scanned as a normal stock
-close_df.drop(columns=['^CNXSC'], inplace=True, errors='ignore')
-vol_df.drop(columns=['^CNXSC'], inplace=True, errors='ignore')
-low_df.drop(columns=['^CNXSC'], inplace=True, errors='ignore')
-high_df.drop(columns=['^CNXSC'], inplace=True, errors='ignore')
 
 # ==========================================
-# 4. CRUNCH TECHNICALS, POCKET PIVOT & ATR
+# 5. CRUNCH TECHNICALS, POCKET PIVOT & ATR
 # ==========================================
 print("Crunching technical criteria, ATR Distances, and Weekly Pocket Pivots...")
 safe_low = low_df.replace(0, np.nan)
@@ -153,19 +155,19 @@ adr_20_df = raw_daily_range.replace([np.inf, -np.inf], np.nan).rolling(window=20
 
 base_rules = close_df > 40
 
-ema_9_df = close_df.ewm(span=9, adjust=False).mean()
-ema_21_df = close_df.ewm(span=21, adjust=False).mean()
-ema_50_df = close_df.ewm(span=50, adjust=False).mean()
+ema_9_df = close_df.ewm(span=9, adjust=False, min_periods=1).mean()
+ema_21_df = close_df.ewm(span=21, adjust=False, min_periods=1).mean()
+ema_50_df = close_df.ewm(span=50, adjust=False, min_periods=1).mean()
 
 tr1 = high_df - low_df
 tr2 = (high_df - close_df.shift(1)).abs()
 tr3 = (low_df - close_df.shift(1)).abs()
 tr_df = pd.DataFrame(np.maximum(tr1.values, np.maximum(tr2.values, tr3.values)), index=close_df.index, columns=close_df.columns)
-atr_14_df = tr_df.rolling(window=14, min_periods=5).mean().replace(0, np.nan) 
+atr_14_df = tr_df.rolling(window=14, min_periods=1).mean().replace(0, np.nan) 
 
 weekly_close_df = close_df.resample('W-FRI').last()
-daily_sma_4_df = weekly_close_df.rolling(4).mean().reindex(close_df.index, method='ffill')
-daily_sma_10_df = weekly_close_df.rolling(10).mean().reindex(close_df.index, method='ffill')
+daily_sma_4_df = weekly_close_df.rolling(4, min_periods=1).mean().reindex(close_df.index, method='ffill')
+daily_sma_10_df = weekly_close_df.rolling(10, min_periods=1).mean().reindex(close_df.index, method='ffill')
 
 dist_9_df = (close_df - ema_9_df) / atr_14_df
 dist_21_df = (close_df - ema_21_df) / atr_14_df
@@ -178,7 +180,7 @@ pp_mask_df = pd.DataFrame(False, index=close_df.index, columns=close_df.columns)
 for ticker in close_df.columns:
     if ticker not in data.columns.levels[0]: continue
     df_tick = data[ticker].dropna(subset=['Close'])
-    if len(df_tick) < 60: continue
+    if len(df_tick) < 10: continue
     weekly_last_dates = df_tick.reset_index().groupby(pd.Grouper(key='Date', freq='W-FRI'))['Date'].last().dropna()
     
     weekly_df = df_tick.resample('W-FRI').agg({
@@ -236,7 +238,7 @@ for name, condition in scanner_conditions.items():
 print(f"Total unique stocks passing Base Rules + ANY specific scan: {len(all_shortlisted)}")
 
 # ==========================================
-# 5. MARKET CAP CHECK & DATA FORMATTING
+# 6. MARKET CAP CHECK & DATA FORMATTING
 # ==========================================
 print("Verifying Volume limits, Market Cap, and compiling final metrics...")
 results = {name: [] for name in scanner_conditions.keys()}
@@ -314,7 +316,6 @@ for ticker in all_shortlisted:
                         pct_above_low = ((final_c - latest_low) / latest_low) * 100 if pd.notna(latest_low) and latest_low != 0 else np.nan
                         pct_off_high = ((final_c - latest_high) / latest_high) * 100 if pd.notna(latest_high) and latest_high != 0 else np.nan
                         
-                        # 🟢 Fetch Pre-Calculated RS Stats for this tick
                         if bench_close is not None:
                             d_rs_off_high = rs_off_high_df.loc[latest_date_obj, ticker]
                             d_rs_dist_21 = rs_dist_21ema_df.loc[latest_date_obj, ticker]
@@ -357,11 +358,10 @@ for ticker in all_shortlisted:
         continue
 
 # ==========================================
-# 6. WRITE RESULTS TO TARGET SHEET
+# 7. WRITE RESULTS TO TARGET SHEET
 # ==========================================
 print("\nExporting all formatted data to Unified Google Sheet...")
 
-# 🟢 Add New Dynamic RS Line Headers
 headers = [
     "Trigger Date", "Stock Symbol", "Industry Group", "Avg Rupee Vol (Cr)", "ADR %",
     "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)", 
@@ -390,7 +390,21 @@ for tab_name, matched_stocks in results.items():
     sheet_output = [headers] + matched_stocks
     
     if len(sheet_output) > 1:
-        worksheet.update(values=sheet_output, range_name='A1', value_input_option='USER_ENTERED')
+        # 🟢 BULLETPROOF JSON FIREWALL: Removes any hidden NaN or Infinity
+        safe_data = []
+        for row in sheet_output:
+            clean_row = []
+            for val in row:
+                if pd.isna(val): 
+                    clean_row.append("")
+                elif isinstance(val, (int, float, np.number)) and np.isinf(val):
+                    clean_row.append("")
+                else:
+                    clean_row.append(val)
+            safe_data.append(clean_row)
+
+        worksheet.update(values=safe_data, range_name='A1', value_input_option='USER_ENTERED')
+        worksheet.freeze(rows=1)
         worksheet.format(f'A1:{dynamic_col_letter}1', {
             "backgroundColor": {"red": 0.1, "green": 0.2, "blue": 0.4},
             "horizontalAlignment": "CENTER",
@@ -401,4 +415,4 @@ for tab_name, matched_stocks in results.items():
         worksheet.update(values=[["No stocks met criteria."]], range_name='A1', value_input_option='USER_ENTERED')
         print(f" -> '{tab_name}' tab updated (0 matches).")
 
-print("\nMaster Scanner Complete! All 9 tabs updated in the Dashboard Sheet.")
+print("\nMaster Scanner Complete! All tabs updated in the Dashboard Sheet.")
