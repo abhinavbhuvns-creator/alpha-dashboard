@@ -74,6 +74,7 @@ tickers = (df_master['Symbol'].str.strip() + '.NS').tolist()
 
 # 🟢 INJECT BENCHMARKS SAFELY TO INDEX 0 TO PREVENT YFINANCE BUG
 if '^CNXSC' not in tickers: tickers.insert(0, '^CNXSC')
+if '^CRSLDX' not in tickers: tickers.insert(0, '^CRSLDX')
 if '^NSEI' not in tickers: tickers.insert(0, '^NSEI')
 
 # ==========================================
@@ -105,9 +106,9 @@ for t in tickers:
     if t in data.columns.levels[0] and 'Close' in data[t]:
         close_data[t] = data[t]['Close']
 
-# Separate the benchmark
+# Separate the benchmark for classic RS ratings
 nifty = close_data['^NSEI'] if '^NSEI' in close_data.columns else None
-close_data.drop(columns=['^NSEI', '^CNXSC'], inplace=True, errors='ignore')
+close_data.drop(columns=['^NSEI', '^CNXSC', '^CRSLDX'], inplace=True, errors='ignore')
 
 if nifty is not None and not close_data.empty:
     daily_returns = close_data.pct_change()
@@ -131,13 +132,19 @@ else:
     print(" -> Skipping RS Calculation: NIFTY 50 benchmark data missing.")
     webster_friday_ranks, classic_friday_ranks = pd.DataFrame(), pd.DataFrame()
 
-# Extract Benchmark for custom RS Lines
-if '^CNXSC' in data.columns.levels[0]:
+# 🟢 Extract Benchmark for custom RS Lines (Waterfall Fallback)
+if '^CNXSC' in data.columns.levels[0] and not data['^CNXSC']['Close'].dropna().empty:
     bench_close = data['^CNXSC']['Close'].ffill()
-elif '^NSEI' in data.columns.levels[0]:
+    print(" -> Benchmark Selected: ^CNXSC (Smallcap 100)")
+elif '^CRSLDX' in data.columns.levels[0] and not data['^CRSLDX']['Close'].dropna().empty:
+    bench_close = data['^CRSLDX']['Close'].ffill()
+    print(" -> Benchmark Selected: ^CRSLDX (Smallcap 250 Fallback)")
+elif '^NSEI' in data.columns.levels[0] and not data['^NSEI']['Close'].dropna().empty:
     bench_close = data['^NSEI']['Close'].ffill()
+    print(" -> Benchmark Selected: ^NSEI (Nifty 50 Fallback)")
 else:
     bench_close = None
+    print(" -> WARNING: All benchmarks failed to download from Yahoo.")
 
 # ==========================================
 # 4. TECH METRICS & CHART GENERATION
@@ -153,7 +160,7 @@ plt.rcParams.update({
 })
 
 for ticker in tickers:
-    if ticker in ['^NSEI', '^CNXSC']: continue 
+    if ticker in ['^NSEI', '^CNXSC', '^CRSLDX']: continue 
     
     stock_sym = ticker.replace('.NS', '')
     try:
@@ -198,6 +205,7 @@ for ticker in tickers:
         df['ema21'] = df['Close'].ewm(span=21, adjust=False).mean()
         df['ema50'] = df['Close'].ewm(span=50, adjust=False).mean()
    
+        # WEEKLY CANDLES
         weekly_df = df.resample('W-FRI').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
         
         if len(weekly_df) >= 10:
@@ -220,6 +228,7 @@ for ticker in tickers:
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
 
+        # SUPPORT GAPS
         c_vals = df['Close'].values
         l_vals = df['Low'].values
         active_gaps = []
@@ -297,7 +306,7 @@ for ticker in tickers:
         else:
             rs_off_high = rs_dist_21ema = rs_1w_chg = rs_out_10d = rs_out_20d = rs_out_50d = np.nan
 
-        # 🟢 INJECTING ALL NEW COLUMNS INTO THE DATABASE EXPORT
+        # 🟢 INJECTING ALL METRICS (OLD AND NEW) INTO THE DICTIONARY
         tech_metrics[stock_sym] = {
             "ADR %": round(adr_20, 2) if pd.notna(adr_20) else "",
             "RVOL (20D)": round(rvol_20, 2) if pd.notna(rvol_20) else "",
@@ -456,6 +465,7 @@ df_tech = pd.DataFrame.from_dict(tech_metrics, orient='index').reset_index()
 df_tech.rename(columns={'index': 'Symbol'}, inplace=True)
 df_final = pd.merge(df_master, df_tech, on='Symbol', how='left').fillna("")
 
+# 🟢 MERGE MARKETSMITH DATA
 if not df_ms.empty:
     df_final = pd.merge(df_final, df_ms, on='Symbol', how='left')
     for col in [c for c in df_ms.columns if c != 'Symbol']:
@@ -511,7 +521,7 @@ if not webster_friday_ranks.empty and not classic_friday_ranks.empty:
 # ==========================================
 print("\nCalculating 6-Month Market Breadth History...")
 try:
-    valid_tickers = [t for t in tickers if t in data.columns.levels[0] and t not in ['^NSEI', '^CNXSC']]
+    valid_tickers = [t for t in tickers if t in data.columns.levels[0] and t not in ['^NSEI', '^CNXSC', '^CRSLDX']]
     
     close_df = pd.DataFrame({t: data[t]['Close'] for t in valid_tickers})
     vol_df = pd.DataFrame({t: data[t]['Volume'] for t in valid_tickers})
@@ -591,7 +601,7 @@ try:
     sym_col = next((c for c in df_etf_stocks.columns if 'symbol' in c.lower() or 'ticker' in c.lower()), None)
     if sym_col:
         etf_tickers = (df_etf_stocks[sym_col].astype(str).str.strip().str.upper() + '.NS').tolist()
-        valid_tickers = [t for t in etf_tickers if t in data.columns.levels[0] and t not in ['^NSEI', '^CNXSC']]
+        valid_tickers = [t for t in etf_tickers if t in data.columns.levels[0] and t not in ['^NSEI', '^CNXSC', '^CRSLDX']]
         
         if valid_tickers:
             df_hist = data[valid_tickers].tail(252).ffill().bfill()
