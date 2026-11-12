@@ -72,40 +72,14 @@ except Exception as e:
 
 tickers = (df_master['Symbol'].str.strip() + '.NS').tolist()
 
-# ==========================================
-# 3. BULLETPROOF BENCHMARK FETCHER
-# ==========================================
-print("\nFetching Benchmark Index separately to guarantee data integrity...")
-bench_close = None
-# Attempts Smallcap 100 first, then Smallcap 250, then Nifty 50
-for b in ['^CNXSC', '^CRSLDX', '^NSEI']:
-    try:
-        b_data = yf.download(b, period="2y", progress=False)
-        if not b_data.empty and 'Close' in b_data:
-            bench_close = b_data['Close']
-            if isinstance(bench_close, pd.DataFrame): 
-                bench_close = bench_close.iloc[:, 0]
-            bench_close = bench_close.ffill()
-            # 🟢 Timezone Stripper for Benchmark
-            bench_close.index = pd.to_datetime(bench_close.index).tz_localize(None).normalize()
-            print(f" -> Successfully fetched benchmark: {b}")
-            break
-    except Exception:
-        continue
-
-# Grab NSEI purely for the Classic RS ranking calculation
-try:
-    nsei_data = yf.download('^NSEI', period="2y", progress=False)
-    nifty = nsei_data['Close'].iloc[:, 0].ffill() if isinstance(nsei_data['Close'], pd.DataFrame) else nsei_data['Close'].ffill()
-    # 🟢 Timezone Stripper for Nifty
-    nifty.index = pd.to_datetime(nifty.index).tz_localize(None).normalize()
-except:
-    nifty = None
+# 🟢 INJECT NIFTY 50 BENCHMARK FOR RS RATING DOWNLOAD
+if '^NSEI' not in tickers:
+    tickers.append('^NSEI')
 
 # ==========================================
-# 4. BATCH DOWNLOAD (2 YEARS OF DATA)
+# 3. BATCH DOWNLOAD (2 YEARS OF DATA)
 # ==========================================
-print(f"\nDownloading price history for {len(tickers)} stocks...")
+print(f"Downloading price history for {len(tickers)} stocks...")
 
 def chunker(seq, size):
     return (seq[pos:pos + size] for pos in range(0, len(seq), size))
@@ -122,13 +96,8 @@ for i, chunk in enumerate(ticker_chunks):
 
 data = pd.concat(all_chunks, axis=1)
 
-if not data.empty:
-    # 🟢 Timezone Stripper for All Stocks to ensure perfect merging
-    data.index = pd.to_datetime(data.index).tz_localize(None).normalize()
-    data = data.groupby(data.index).max() # Safely remove any duplicate dates
-
 # ==========================================
-# 5. VECTORIZED RELATIVE STRENGTH RANKING
+# 3.5 VECTORIZED RELATIVE STRENGTH RANKING
 # ==========================================
 print("\nCalculating Cross-Sectional RS Ratings (Classic & Webster)...")
 close_data = pd.DataFrame()
@@ -136,17 +105,23 @@ for t in tickers:
     if t in data.columns.levels[0] and 'Close' in data[t]:
         close_data[t] = data[t]['Close']
 
+# Separate the benchmark
+nifty = close_data['^NSEI'] if '^NSEI' in close_data.columns else None
+close_data.drop(columns=['^NSEI'], inplace=True, errors='ignore')
+
 if nifty is not None and not close_data.empty:
-    aligned_nifty = nifty.reindex(close_data.index).ffill()
-    daily_returns = close_data.pct_change()
-    webster_base = daily_returns.ewm(span=63, adjust=False).mean()
+    # --- Webster 3-Month Exponential ---
+    rs_line_base = close_data.div(nifty, axis=0)
+    webster_base = rs_line_base.ewm(span=63, adjust=False).mean()
     
+    # --- Classic 12-Month Static ---
     roc_63 = close_data / close_data.shift(63)
     roc_126 = close_data / close_data.shift(126)
     roc_189 = close_data / close_data.shift(189)
     roc_252 = close_data / close_data.shift(252)
     classic_base = (roc_63 * 2) + roc_126 + roc_189 + roc_252
 
+    # Isolate Fridays
     fridays_idx = close_data.index[close_data.index.dayofweek == 4]
     
     def calc_1_to_99_rank(row):
@@ -160,7 +135,7 @@ else:
     webster_friday_ranks, classic_friday_ranks = pd.DataFrame(), pd.DataFrame()
 
 # ==========================================
-# 6. TECH METRICS & CHART GENERATION
+# 4. TECH METRICS & CHART GENERATION
 # ==========================================
 print("\nGenerating Sheet Analytics & Custom Visual Chart PNGs...")
 tech_metrics = {}
@@ -173,6 +148,8 @@ plt.rcParams.update({
 })
 
 for ticker in tickers:
+    if ticker == '^NSEI': continue # Skip generating metrics/charts for the index
+    
     stock_sym = ticker.replace('.NS', '')
     try:
         if len(tickers) == 1: df = data.copy()
@@ -291,31 +268,38 @@ for ticker in tickers:
             ret_past_2m_till_last_month = ((close_1m_ago / close_3m_ago) - 1) * 100
         else:
             ret_past_2m_till_last_month = None
-            
-        # 🟢 RS LINE DYNAMIC METRICS
-        if bench_close is not None:
-            aligned_bench = bench_close.reindex(df.index).ffill()
-            rs_raw = (df['Close'] / aligned_bench) * 100
-            
-            rs_52w_high = rs_raw.tail(252).max()
-            rs_off_high = ((rs_raw.iloc[-1] - rs_52w_high) / rs_52w_high) * 100 if pd.notna(rs_52w_high) and rs_52w_high > 0 else np.nan
-            
-            rs_21ema = rs_raw.ewm(span=21, adjust=False).mean()
-            rs_dist_21ema = ((rs_raw.iloc[-1] - rs_21ema.iloc[-1]) / rs_21ema.iloc[-1]) * 100 if pd.notna(rs_21ema.iloc[-1]) and rs_21ema.iloc[-1] > 0 else np.nan
-            
-            rs_1w_chg = rs_raw.pct_change(periods=5).iloc[-1] * 100
-            
-            stock_ret = df['Close'].pct_change()
-            bench_ret = aligned_bench.pct_change()
-            is_out = (stock_ret > bench_ret).astype(int)
-            
-            rs_out_10d = (is_out.tail(10).sum() / 10.0) * 100 if len(is_out) >= 10 else np.nan
-            rs_out_20d = (is_out.tail(20).sum() / 20.0) * 100 if len(is_out) >= 20 else np.nan
-            rs_out_50d = (is_out.tail(50).sum() / 50.0) * 100 if len(is_out) >= 50 else np.nan
-        else:
-            rs_off_high = rs_dist_21ema = rs_1w_chg = rs_out_10d = rs_out_20d = rs_out_50d = np.nan
 
+        # ==========================================
+        # 🟢 RS LINE DERIVATIVE MATH
+        # ==========================================
+        if '^NSEI' in data.columns.levels[0]:
+            aligned_nifty = data['^NSEI']['Close'].reindex(df.index).ffill()
+            df['RS_Line'] = df['Close'] / aligned_nifty
+            
+            df['RS_21_EMA'] = df['RS_Line'].ewm(span=21, adjust=False).mean()
+            rs_52w_high = df['RS_Line'].tail(252).max()
+            
+            current_rs = df['RS_Line'].iloc[-1]
+            current_rs_21ema = df['RS_21_EMA'].iloc[-1]
+            
+            rs_off_high = ((current_rs - rs_52w_high) / rs_52w_high) * 100 if pd.notna(rs_52w_high) and rs_52w_high > 0 else np.nan
+            dist_rs_21ema = ((current_rs - current_rs_21ema) / current_rs_21ema) * 100 if pd.notna(current_rs_21ema) else np.nan
+            
+            rs_1w_chg = df['RS_Line'].pct_change(periods=5).iloc[-1] * 100
+            rs_10d_outperf = df['RS_Line'].pct_change(periods=10).iloc[-1] * 100
+            rs_20d_outperf = df['RS_Line'].pct_change(periods=20).iloc[-1] * 100
+            rs_50d_outperf = df['RS_Line'].pct_change(periods=50).iloc[-1] * 100
+        else:
+            rs_off_high = dist_rs_21ema = rs_1w_chg = rs_10d_outperf = rs_20d_outperf = rs_50d_outperf = np.nan
+
+        # 🟢 INJECT RS METRICS TO DAILY_TECHNICALS EXPORT
         tech_metrics[stock_sym] = {
+            "RS Line % off 52W High": round(rs_off_high, 2) if pd.notna(rs_off_high) else "",
+            "% Dist from RS 21 EMA": round(dist_rs_21ema, 2) if pd.notna(dist_rs_21ema) else "",
+            "RS Line 1W Change %": round(rs_1w_chg, 2) if pd.notna(rs_1w_chg) else "",
+            "RS Outperform (10D) %": round(rs_10d_outperf, 2) if pd.notna(rs_10d_outperf) else "",
+            "RS Outperform (20D) %": round(rs_20d_outperf, 2) if pd.notna(rs_20d_outperf) else "",
+            "RS Outperform (50D) %": round(rs_50d_outperf, 2) if pd.notna(rs_50d_outperf) else "",
             "ADR %": round(adr_20, 2) if pd.notna(adr_20) else "",
             "RVOL (20D)": round(rvol_20, 2) if pd.notna(rvol_20) else "",
             "PPV (10D)": int(ppv_10d_count) if pd.notna(ppv_10d_count) else 0,
@@ -343,15 +327,7 @@ for ticker in tickers:
             "50 EMA (ATR)": round(dist_50, 2) if pd.notna(dist_50) else "",
             "4W SMA (ATR)": round(dist_w4, 2) if pd.notna(dist_w4) else "",
             "10W SMA (ATR)": round(dist_w10, 2) if pd.notna(dist_w10) else "",
-            "Supp Gap (ATR)": round(dist_sg, 2) if pd.notna(dist_sg) else "",
-            "RS Line % off 52W High": round(rs_off_high, 2) if pd.notna(rs_off_high) else "",
-            "% Dist from RS 21 EMA": round(rs_dist_21ema, 2) if pd.notna(rs_dist_21ema) else "",
-            "RS Line 1W Change %": round(rs_1w_chg, 2) if pd.notna(rs_1w_chg) else "",
-            "RS Outperform (10D) %": round(rs_out_10d, 2) if pd.notna(rs_out_10d) else "",
-            "RS Outperform (20D) %": round(rs_out_20d, 2) if pd.notna(rs_out_20d) else "",
-            "RS Outperform (50D) %": round(rs_out_50d, 2) if pd.notna(rs_out_50d) else "",
-            "Webster RS (Current)": int(webster_friday_ranks[ticker].iloc[-1]) if not webster_friday_ranks.empty and ticker in webster_friday_ranks.columns and not pd.isna(webster_friday_ranks[ticker].iloc[-1]) else "",
-            "Classic RS (Current)": int(classic_friday_ranks[ticker].iloc[-1]) if not classic_friday_ranks.empty and ticker in classic_friday_ranks.columns and not pd.isna(classic_friday_ranks[ticker].iloc[-1]) else "",
+            "Supp Gap (ATR)": round(dist_sg, 2) if pd.notna(dist_sg) else ""
         }
 
         # STATIC CHART GEN
@@ -394,12 +370,13 @@ for ticker in tickers:
         continue
 
 # ==========================================
-# 7. GENERATE INDEX CHARTS FOR BREADTH VIEW
+# 4.5 GENERATE INDEX CHARTS FOR BREADTH VIEW
 # ==========================================
 print("\nGenerating Nifty 50 and Smallcap Index Charts...")
 try:
-    idx_data = yf.download(['^NSEI', '^CNXSC'], period="1y", group_by="ticker", progress=False)
-    for idx_sym, file_name in [('^NSEI', 'NIFTY50'), ('^CNXSC', 'SMALLCAP100')]:
+    # 🟢 REMOVED ^CNXSC TO PREVENT YFINANCE NaN CRASH
+    idx_data = yf.download(['^NSEI', '^CRSLDX'], period="1y", group_by="ticker", progress=False)
+    for idx_sym, file_name in [('^NSEI', 'NIFTY50'), ('^CRSLDX', 'SMALLCAP250')]:
         if idx_sym in idx_data.columns.levels[0]:
             df_idx = idx_data[idx_sym].dropna(subset=['Close']).tail(65)
        
@@ -437,7 +414,7 @@ except Exception as e:
     print(f"Error generating index charts: {e}")
 
 # ==========================================
-# 8. PUSH IMAGES TO PUBLIC GITHUB REPO
+# 5. PUSH IMAGES TO PUBLIC GITHUB REPO
 # ==========================================
 print("\nPushing generated charts to public CDN repository...")
 GITHUB_USER = "abhinavbhuvns-creator"
@@ -466,7 +443,7 @@ else:
     print("⚠️ GH_PAT secret not found. Skipping chart push to public repo.")
 
 # ==========================================
-# 9. MERGE DATA & WRITE TO GOOGLE SHEET
+# 6. MERGE DATA & WRITE TO GOOGLE SHEET
 # ==========================================
 print("Updating Google Sheets Master Framework...")
 df_tech = pd.DataFrame.from_dict(tech_metrics, orient='index').reset_index()
@@ -491,15 +468,17 @@ target_ws.freeze(rows=1)
 target_ws.format('A1:Z1', {'textFormat': {'bold': True}, "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}})
 
 # ==========================================
-# 10. WRITE HISTORICAL RS RATINGS TO SHEETS
+# 6.5 WRITE HISTORICAL RS RATINGS TO SHEETS
 # ==========================================
 if not webster_friday_ranks.empty and not classic_friday_ranks.empty:
     print("\nExporting last 6 Months of Friday RS Ratings to Google Sheets...")
     
+    # Grab the last 26 Fridays
     recent_fridays = fridays_idx[-26:]
     webster_hist = webster_friday_ranks.loc[recent_fridays].round(0).fillna("")
     classic_hist = classic_friday_ranks.loc[recent_fridays].round(0).fillna("")
     
+    # Format headers
     webster_hist.columns = [c.replace('.NS', '') for c in webster_hist.columns]
     webster_hist.index = webster_hist.index.strftime('%Y-%m-%d')
     webster_hist = webster_hist.reset_index().rename(columns={'Date': 'Friday_Date'})
@@ -508,6 +487,7 @@ if not webster_friday_ranks.empty and not classic_friday_ranks.empty:
     classic_hist.index = classic_hist.index.strftime('%Y-%m-%d')
     classic_hist = classic_hist.reset_index().rename(columns={'Date': 'Friday_Date'})
     
+    # Write Webster History Tab
     try:
         w_ws = spreadsheet.worksheet("Webster_3M_History")
         w_ws.clear()
@@ -516,6 +496,7 @@ if not webster_friday_ranks.empty and not classic_friday_ranks.empty:
     w_ws.update(values=[webster_hist.columns.values.tolist()] + webster_hist.values.tolist(), range_name='A1')
     w_ws.freeze(rows=1, cols=1)
     
+    # Write Classic History Tab
     try:
         c_ws = spreadsheet.worksheet("Classic_12M_History")
         c_ws.clear()
@@ -523,5 +504,167 @@ if not webster_friday_ranks.empty and not classic_friday_ranks.empty:
         c_ws = spreadsheet.add_worksheet(title="Classic_12M_History", rows="100", cols="2100")
     c_ws.update(values=[classic_hist.columns.values.tolist()] + classic_hist.values.tolist(), range_name='A1')
     c_ws.freeze(rows=1, cols=1)
+
+# ==========================================
+# 7. CALCULATE 6-MONTH MARKET BREADTH
+# ==========================================
+print("\nCalculating 6-Month Market Breadth History...")
+try:
+    # Filter tickers to remove the benchmark index if it was added
+    valid_tickers = [t for t in tickers if t in data.columns.levels[0] and t != '^NSEI']
+    
+    close_df = pd.DataFrame({t: data[t]['Close'] for t in valid_tickers})
+    vol_df = pd.DataFrame({t: data[t]['Volume'] for t in valid_tickers})
+    high_df = pd.DataFrame({t: data[t]['High'] for t in valid_tickers})
+    low_df = pd.DataFrame({t: data[t]['Low'] for t in valid_tickers})
+
+    prev_close = close_df.shift(1)
+    up_counts = (close_df > prev_close).sum(axis=1)
+    down_counts = (close_df < prev_close).sum(axis=1)
+    
+    rolling_up_5 = up_counts.rolling(5).sum()
+    rolling_down_5 = down_counts.rolling(5).sum()
+    ratio_5d = round(rolling_up_5 / rolling_down_5.replace(0, np.nan), 2)
+
+    sma50 = close_df.rolling(50).mean()
+    sma200 = close_df.rolling(200).mean()
+    above_50 = (close_df > sma50).sum(axis=1)
+    below_50 = (close_df < sma50).sum(axis=1)
+    above_200 = (close_df > sma200).sum(axis=1)
+    below_200 = (close_df < sma200).sum(axis=1)
+
+    high252 = high_df.rolling(252).max()
+    low252 = low_df.rolling(252).min()
+    new_highs = (high_df >= high252).sum(axis=1)
+    new_lows = (low_df <= low252).sum(axis=1)
+
+    avg_vol_50 = vol_df.rolling(50).mean()
+    up_on_vol = ((close_df.pct_change() >= 0.045) & (vol_df > 2 * avg_vol_50) & (close_df > 40)).sum(axis=1)
+    
+    prev_max_252 = prev_close.rolling(252).max()
+    high_52w_scan = ((close_df > prev_max_252) & (close_df > 40)).sum(axis=1)
+
+    ema21 = close_df.ewm(span=21, adjust=False).mean()
+    ema50_df = close_df.ewm(span=50, adjust=False).mean()
+    ema150 = close_df.ewm(span=150, adjust=False).mean()
+    wl_one_day = ((ema21 > ema50_df) & (ema50_df > ema150) & (close_df > ema50_df) & (close_df > 40)).sum(axis=1)
+
+    breadth_df = pd.DataFrame({
+        'Date': close_df.index.strftime('%Y-%m-%d'),
+        'Stock Up': up_counts,
+        'Stock Down': down_counts,
+        '5 Day Ratio': ratio_5d,
+        'New High': new_highs,
+        'New Low': new_lows,
+        'Above 50 SMA': above_50,
+        'Below 50 SMA': below_50,
+        'Above 200 SMA': above_200,
+        'Below 200 SMA': below_200,
+        'Up on Volume': up_on_vol,
+        '52 Week High': high_52w_scan,
+        'Watchlist One Day': wl_one_day
+    }).dropna().tail(130)
+
+    breadth_tab = "Market_Breadth_History"
+    try:
+        breadth_ws = spreadsheet.worksheet(breadth_tab)
+        breadth_ws.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        breadth_ws = spreadsheet.add_worksheet(title=breadth_tab, rows="200", cols="15")
+    
+    breadth_out = [breadth_df.columns.values.tolist()] + breadth_df.values.tolist()
+    breadth_ws.update(values=breadth_out, range_name='A1', value_input_option='USER_ENTERED')
+    breadth_ws.format('A1:M1', {'textFormat': {'bold': True}, "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}})
+    print(" -> Successfully overwrote 6-month breadth history.")
+except Exception as e:
+    print(f" -> Could not calculate market breadth: {e}")
+
+# ==========================================
+# 8. BUILD SYNTHETIC ETF CHARTS (GROWTH50)
+# ==========================================
+print("\nBuilding Synthetic Equal-Weight ETF for GROWTH50...")
+try:
+    ws_growth = spreadsheet.worksheet("GROWTH50")
+    records = ws_growth.get_all_records()
+    df_etf_stocks = pd.DataFrame(records)
+    
+    sym_col = next((c for c in df_etf_stocks.columns if 'symbol' in c.lower() or 'ticker' in c.lower()), None)
+    if sym_col:
+        etf_tickers = (df_etf_stocks[sym_col].astype(str).str.strip().str.upper() + '.NS').tolist()
+        valid_tickers = [t for t in etf_tickers if t in data.columns.levels[0] and t != '^NSEI']
+        
+        if valid_tickers:
+            df_hist = data[valid_tickers].tail(252).ffill().bfill()
+            index_open = pd.Series(0.0, index=df_hist.index)
+            index_high = pd.Series(0.0, index=df_hist.index)
+            index_low = pd.Series(0.0, index=df_hist.index)
+            index_close = pd.Series(0.0, index=df_hist.index)
+            
+            valid_count = 0
+            for t in valid_tickers:
+                c_series = df_hist[t]['Close']
+                if c_series.empty or pd.isna(c_series.iloc[0]) or c_series.iloc[0] == 0: continue
+                factor = 100.0 / c_series.iloc[0]
+                index_open += df_hist[t]['Open'] * factor
+                index_high += df_hist[t]['High'] * factor
+                index_low += df_hist[t]['Low'] * factor
+                index_close += df_hist[t]['Close'] * factor
+                valid_count += 1
+            
+            if valid_count > 0:
+                df_index = pd.DataFrame({
+                    'Open': round(index_open / valid_count, 2),
+                    'High': round(index_high / valid_count, 2),
+                    'Low': round(index_low / valid_count, 2),
+                    'Close': round(index_close / valid_count, 2)
+                })
+                
+                df_index['9 EMA'] = round(df_index['Close'].ewm(span=9, adjust=False).mean(), 2)
+                df_index['21 EMA'] = round(df_index['Close'].ewm(span=21, adjust=False).mean(), 2)
+                df_index['50 EMA'] = round(df_index['Close'].ewm(span=50, adjust=False).mean(), 2)
+                
+                df_idx_chart = df_index.tail(65).copy()
+                fig, ax1 = plt.subplots(1, 1, figsize=(4, 2.5))
+                fig.subplots_adjust(left=0.12, right=0.95, top=0.9, bottom=0.15)
+                
+                idx = np.arange(len(df_idx_chart))
+                up = df_idx_chart['Close'] >= df_idx_chart['Open']
+                down = ~up
+                
+                ax1.vlines(idx[up], df_idx_chart['Low'][up], df_idx_chart['High'][up], color='#26a69a', linewidth=1)
+                ax1.vlines(idx[down], df_idx_chart['Low'][down], df_idx_chart['High'][down], color='#ef5350', linewidth=1)
+                ax1.bar(idx[up], df_idx_chart['Close'][up] - df_idx_chart['Open'][up], bottom=df_idx_chart['Open'][up], color='#26a69a', width=0.6)
+                ax1.bar(idx[down], df_idx_chart['Open'][down] - df_idx_chart['Close'][down], bottom=df_idx_chart['Close'][down], color='#ef5350', width=0.6)
+                
+                ax1.plot(idx, df_idx_chart['9 EMA'], color='#87CEFA', linewidth=0.8, label='9 EMA')
+                ax1.plot(idx, df_idx_chart['21 EMA'], color='#26a69a', linewidth=0.8, label='21 EMA')
+                ax1.plot(idx, df_idx_chart['50 EMA'], color='#f5b041', linewidth=0.8, label='50 EMA')
+                
+                ax1.set_title("GROWTH50 Index", color='white', fontsize=10, fontweight='bold', loc='left', pad=2)
+                ax1.grid(True, alpha=0.2)
+                
+                step = max(1, len(df_idx_chart) // 3)
+                ax1.set_xticks(idx[::step])
+                
+                df_idx_chart.reset_index(drop=True, inplace=True)
+                ax1.set_xticklabels(pd.to_datetime(df_idx_chart['Date']).dt.strftime('%b %d')[::step], rotation=0)
+
+                plt.savefig(f"charts/Chart_GROWTH50.png", dpi=120, facecolor=fig.get_facecolor(), edgecolor='none')
+                plt.close(fig)
+
+                df_index.reset_index(inplace=True)
+                df_index['Date'] = df_index['Date'].dt.strftime('%Y-%m-%d')
+                
+                out_tab = "Chart_GROWTH50"
+                try:
+                    out_ws = spreadsheet.worksheet(out_tab)
+                    out_ws.clear()
+                except:
+                    out_ws = spreadsheet.add_worksheet(title=out_tab, rows="300", cols="10")
+                    
+                out_data = [df_index.columns.values.tolist()] + df_index.values.tolist()
+                out_ws.update(values=out_data, range_name='A1')
+except Exception as e:
+    print(f" -> Could not build ETF chart: {e}")
 
 print(f"\n✅ Success! Systems completely aligned.")
