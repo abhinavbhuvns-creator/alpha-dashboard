@@ -72,15 +72,37 @@ except Exception as e:
 
 tickers = (df_master['Symbol'].str.strip() + '.NS').tolist()
 
-# 🟢 INJECT BENCHMARKS SAFELY TO INDEX 0 TO PREVENT YFINANCE BUG
-if '^CNXSC' not in tickers: tickers.insert(0, '^CNXSC')
-if '^CRSLDX' not in tickers: tickers.insert(0, '^CRSLDX')
-if '^NSEI' not in tickers: tickers.insert(0, '^NSEI')
+# ==========================================
+# 3. BULLETPROOF BENCHMARK FETCHER
+# ==========================================
+print("\nFetching Benchmark Index separately to guarantee data integrity...")
+bench_close = None
+for b in ['^CNXSC', '^CRSLDX', '^NSEI']:
+    try:
+        b_data = yf.download(b, period="2y", progress=False)
+        if not b_data.empty and 'Close' in b_data:
+            bench_close = b_data['Close']
+            if isinstance(bench_close, pd.DataFrame): 
+                bench_close = bench_close.iloc[:, 0]
+            bench_close = bench_close.ffill()
+            bench_close.index = pd.to_datetime(bench_close.index).tz_localize(None).normalize()
+            print(f" -> Successfully fetched benchmark: {b}")
+            break
+    except Exception:
+        continue
+
+# Grab NSEI purely for the Classic RS ranking calculation
+try:
+    nsei_data = yf.download('^NSEI', period="2y", progress=False)
+    nifty = nsei_data['Close'].iloc[:, 0].ffill() if isinstance(nsei_data['Close'], pd.DataFrame) else nsei_data['Close'].ffill()
+    nifty.index = pd.to_datetime(nifty.index).tz_localize(None).normalize()
+except:
+    nifty = None
 
 # ==========================================
-# 3. BATCH DOWNLOAD (2 YEARS OF DATA)
+# 4. BATCH DOWNLOAD (2 YEARS OF DATA)
 # ==========================================
-print(f"Downloading price history for {len(tickers)} stocks...")
+print(f"\nDownloading price history for {len(tickers)} stocks...")
 
 def chunker(seq, size):
     return (seq[pos:pos + size] for pos in range(0, len(seq), size))
@@ -102,16 +124,13 @@ if not data.empty:
     data = data.groupby(data.index).max() 
 
 # ==========================================
-# 3.5 VECTORIZED RELATIVE STRENGTH RANKING
+# 5. VECTORIZED RELATIVE STRENGTH RANKING
 # ==========================================
 print("\nCalculating Cross-Sectional RS Ratings (Classic & Webster)...")
 close_data = pd.DataFrame()
 for t in tickers:
     if t in data.columns.levels[0] and 'Close' in data[t]:
         close_data[t] = data[t]['Close']
-
-nifty = close_data['^NSEI'] if '^NSEI' in close_data.columns else None
-close_data.drop(columns=['^NSEI', '^CNXSC', '^CRSLDX'], inplace=True, errors='ignore')
 
 if nifty is not None and not close_data.empty:
     daily_returns = close_data.pct_change()
@@ -135,17 +154,8 @@ else:
     print(" -> Skipping RS Calculation: NIFTY 50 benchmark data missing.")
     webster_friday_ranks, classic_friday_ranks = pd.DataFrame(), pd.DataFrame()
 
-if '^CNXSC' in data.columns.levels[0] and not data['^CNXSC']['Close'].dropna().empty:
-    bench_close = data['^CNXSC']['Close'].ffill()
-elif '^CRSLDX' in data.columns.levels[0] and not data['^CRSLDX']['Close'].dropna().empty:
-    bench_close = data['^CRSLDX']['Close'].ffill()
-elif '^NSEI' in data.columns.levels[0] and not data['^NSEI']['Close'].dropna().empty:
-    bench_close = data['^NSEI']['Close'].ffill()
-else:
-    bench_close = None
-
 # ==========================================
-# 4. TECH METRICS & CHART GENERATION
+# 6. TECH METRICS & CHART GENERATION
 # ==========================================
 print("\nGenerating Sheet Analytics & Custom Visual Chart PNGs...")
 tech_metrics = {}
@@ -158,8 +168,6 @@ plt.rcParams.update({
 })
 
 for ticker in tickers:
-    if ticker in ['^NSEI', '^CNXSC', '^CRSLDX']: continue 
-    
     stock_sym = ticker.replace('.NS', '')
     try:
         if len(tickers) == 1: df = data.copy()
@@ -279,6 +287,7 @@ for ticker in tickers:
         else:
             ret_past_2m_till_last_month = None
             
+        # 🟢 RS LINE DYNAMIC METRICS
         if bench_close is not None:
             aligned_bench = bench_close.reindex(df.index).ffill()
             rs_raw = (df['Close'] / aligned_bench) * 100
@@ -289,10 +298,10 @@ for ticker in tickers:
             rs_21ema = rs_raw.ewm(span=21, adjust=False, min_periods=1).mean()
             rs_dist_21ema = ((rs_raw.iloc[-1] - rs_21ema.iloc[-1]) / rs_21ema.iloc[-1]) * 100 if pd.notna(rs_21ema.iloc[-1]) and rs_21ema.iloc[-1] > 0 else np.nan
             
-            rs_1w_chg = rs_raw.pct_change(periods=5).iloc[-1] * 100
+            rs_1w_chg = rs_raw.pct_change(periods=5, fill_method=None).iloc[-1] * 100
             
-            stock_ret = df['Close'].pct_change()
-            bench_ret = aligned_bench.pct_change()
+            stock_ret = df['Close'].pct_change(fill_method=None)
+            bench_ret = aligned_bench.pct_change(fill_method=None)
             is_out = (stock_ret > bench_ret).astype(int)
             
             rs_out_10d = (is_out.tail(10).sum() / 10.0) * 100 if len(is_out) >= 10 else np.nan
