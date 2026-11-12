@@ -86,15 +86,19 @@ for b in ['^CNXSC', '^CRSLDX', '^NSEI']:
             if isinstance(bench_close, pd.DataFrame): 
                 bench_close = bench_close.iloc[:, 0]
             bench_close = bench_close.ffill()
+            # 🟢 Timezone Stripper for Benchmark
+            bench_close.index = pd.to_datetime(bench_close.index).tz_localize(None).normalize()
             print(f" -> Successfully fetched benchmark: {b}")
             break
     except Exception:
         continue
 
-# Also grab NSEI purely for the Webster RS ranking calculation
+# Grab NSEI purely for the Classic RS ranking calculation
 try:
     nsei_data = yf.download('^NSEI', period="2y", progress=False)
     nifty = nsei_data['Close'].iloc[:, 0].ffill() if isinstance(nsei_data['Close'], pd.DataFrame) else nsei_data['Close'].ffill()
+    # 🟢 Timezone Stripper for Nifty
+    nifty.index = pd.to_datetime(nifty.index).tz_localize(None).normalize()
 except:
     nifty = None
 
@@ -117,6 +121,11 @@ for i, chunk in enumerate(ticker_chunks):
         time.sleep(2) 
 
 data = pd.concat(all_chunks, axis=1)
+
+if not data.empty:
+    # 🟢 Timezone Stripper for All Stocks to ensure perfect merging
+    data.index = pd.to_datetime(data.index).tz_localize(None).normalize()
+    data = data.groupby(data.index).max() # Safely remove any duplicate dates
 
 # ==========================================
 # 5. VECTORIZED RELATIVE STRENGTH RANKING
@@ -283,7 +292,7 @@ for ticker in tickers:
         else:
             ret_past_2m_till_last_month = None
             
-        # 🟢 RS LINE DYNAMIC METRICS (Using the Bulletproof Benchmark)
+        # 🟢 RS LINE DYNAMIC METRICS
         if bench_close is not None:
             aligned_bench = bench_close.reindex(df.index).ffill()
             rs_raw = (df['Close'] / aligned_bench) * 100
