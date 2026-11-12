@@ -8,7 +8,6 @@ import yfinance as yf
 import gspread
 import shutil
 from google.oauth2.service_account import Credentials
-import matplotlib.subplots as plt_sub
 import matplotlib.pyplot as plt
 
 warnings.simplefilter(action='ignore')
@@ -262,7 +261,7 @@ for ticker in tickers:
 
         # STATIC CHART GEN
         df_chart = df.tail(65)
-        fig, (ax1, ax2) = plt_sub.subplots(2, 1, figsize=(4, 2.5), gridspec_kw={'height_ratios': [3, 1]})
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(4, 2.5), gridspec_kw={'height_ratios': [3, 1]})
         fig.subplots_adjust(left=0.12, right=0.95, top=0.9, bottom=0.1, hspace=0.05)
         idx = np.arange(len(df_chart))
         up = df_chart['Close'] >= df_chart['Open']
@@ -301,7 +300,7 @@ try:
     for idx_sym, file_name in [('^NSEI', 'NIFTY50'), ('^CRSLDX', 'SMALLCAP250')]:
         if idx_sym in idx_data.columns.levels[0]:
             df_idx = idx_data[idx_sym].dropna(subset=['Close']).tail(65)
-            fig, (ax1, ax2) = plt_sub.subplots(2, 1, figsize=(4, 2.5), gridspec_kw={'height_ratios': [3, 1]})
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(4, 2.5), gridspec_kw={'height_ratios': [3, 1]})
             fig.subplots_adjust(left=0.12, right=0.95, top=0.9, bottom=0.1, hspace=0.05)
             idx = np.arange(len(df_idx))
             up = df_idx['Close'] >= df_idx['Open']
@@ -444,7 +443,6 @@ try:
     ema150 = close_df.ewm(span=150, adjust=False, min_periods=1).mean()
     wl_one_day = ((ema21_df_b > sma50) & (sma50 > ema150) & (close_df > sma50) & (close_df > 40)).sum(axis=1)
 
-    # 🟢 GRAB ONLY THE LAST 5 DAYS (To ensure overlap captures latest market changes safely)
     breadth_recent_df = pd.DataFrame({
         'Date': close_df.index.strftime('%Y-%m-%d'),
         'Stock Up': up_counts,
@@ -465,7 +463,6 @@ try:
         'Watchlist One Day': wl_one_day
     }).dropna().tail(5)
 
-    # 🟢 MERGE & TRIM TO MAINTAIN 5-YEAR (1260 days) LIMIT
     combined_breadth = pd.concat([breadth_recent_df, df_existing_breadth])
     combined_breadth = combined_breadth.drop_duplicates(subset=['Date'], keep='first')
     combined_breadth = combined_breadth.sort_values('Date', ascending=False).head(1260)
@@ -523,7 +520,7 @@ try:
                 df_index['50 EMA'] = round(df_index['Close'].ewm(span=50, adjust=False).mean(), 2)
                 
                 df_idx_chart = df_index.tail(65).copy()
-                fig, ax1 = plt_sub.subplots(1, 1, figsize=(4, 2.5))
+                fig, ax1 = plt.subplots(1, 1, figsize=(4, 2.5))
                 fig.subplots_adjust(left=0.12, right=0.95, top=0.9, bottom=0.15)
                 idx = np.arange(len(df_idx_chart))
                 up = df_idx_chart['Close'] >= df_idx_chart['Open']
