@@ -169,13 +169,27 @@ print(f"Found {len(all_unique_stocks)} unique stocks matching timeframe rules.")
 # ==========================================
 print("Downloading recent technical data for shortlisted stocks...")
 tickers = [s + '.NS' for s in all_unique_stocks]
-# 🟢 Add Benchmark
-if '^CNXSC' not in tickers: tickers.append('^CNXSC')
 
 session = requests.Session()
 session.headers.update({
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 })
+
+print("\nFetching Benchmark Index separately to guarantee data integrity...")
+bench_close = None
+for b in ['^CNXSC', '^CRSLDX', '^NSEI']:
+    try:
+        b_data = yf.download(b, period="250d", session=session, progress=False)
+        if not b_data.empty and 'Close' in b_data:
+            bench_close = b_data['Close']
+            if isinstance(bench_close, pd.DataFrame): 
+                bench_close = bench_close.iloc[:, 0]
+            bench_close = bench_close.ffill()
+            bench_close.index = pd.to_datetime(bench_close.index).tz_localize(None).normalize()
+            print(f" -> Successfully fetched benchmark: {b}")
+            break
+    except Exception:
+        continue
 
 chunk_size = 20
 ticker_chunks = [tickers[i:i + chunk_size] for i in range(0, len(tickers), chunk_size)]
@@ -201,16 +215,14 @@ if len(tickers) > 0:
             raise SystemExit(f"🛑 CRITICAL ERROR: Yahoo permanently blocked batch {i+1}. Run the dashboard again later.")
         time.sleep(5) 
         
-    if all_chunks: data = pd.concat(all_chunks, axis=1)
+    if all_chunks: 
+        data = pd.concat(all_chunks, axis=1)
+        data.index = pd.to_datetime(data.index).tz_localize(None).normalize()
+        data = data.groupby(data.index).max()
     else: data = pd.DataFrame()
 else:
     data = pd.DataFrame()
 
-# Extract Benchmark
-if '^CNXSC' in data.columns.levels[0]:
-    bench_close = data['^CNXSC']['Close'].ffill()
-else:
-    bench_close = None
 
 tech_data = {}
 print("Calculating EMAs, Returns, Squeeze Metric, ATR Distances, ADR, and RS Metrics...")
@@ -226,13 +238,14 @@ for stock in all_unique_stocks:
             df = data[ticker].copy()
             
         df = df.dropna(subset=['Close'])
-        if df.empty or len(df) < 150: continue
+        # 🟢 IPO Fix: Dropped limit from 150 to 5 days
+        if df.empty or len(df) < 5: continue
         
         df['tr1'] = df['High'] - df['Low']
         df['tr2'] = abs(df['High'] - df['Close'].shift(1))
         df['tr3'] = abs(df['Low'] - df['Close'].shift(1))
         df['TR'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
-        atr_14 = df['TR'].rolling(14).mean().iloc[-1]
+        atr_14 = df['TR'].rolling(14, min_periods=1).mean().iloc[-1]
         close = df['Close'].iloc[-1]
         
         high_52w = df['High'].max()
@@ -242,10 +255,10 @@ for stock in all_unique_stocks:
         pct_off_high = ((close - high_52w) / high_52w) * 100 if pd.notna(high_52w) and high_52w != 0 else np.nan
         pct_above_low = ((close - low_52w) / low_52w) * 100 if pd.notna(low_52w) and low_52w != 0 else np.nan
         
-        ema_9 = df['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
-        ema_21 = df['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
-        ema_50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
-        ema_150 = df['Close'].ewm(span=150, adjust=False).mean().iloc[-1]
+        ema_9 = df['Close'].ewm(span=9, adjust=False, min_periods=1).mean().iloc[-1]
+        ema_21 = df['Close'].ewm(span=21, adjust=False, min_periods=1).mean().iloc[-1]
+        ema_50 = df['Close'].ewm(span=50, adjust=False, min_periods=1).mean().iloc[-1]
+        ema_150 = df['Close'].ewm(span=150, adjust=False, min_periods=1).mean().iloc[-1]
         
         weekly_df = df.resample('W-FRI').agg({'Open': 'first', 'Close': 'last'}).dropna()
         
@@ -291,7 +304,7 @@ for stock in all_unique_stocks:
         dist_sg = (close - nearest_sg_top) / atr_14 if pd.notna(atr_14) and atr_14 != 0 and pd.notna(nearest_sg_top) else np.nan
         
         rupee_vol = df['Close'] * df['Volume']
-        avg_rupee_vol_20 = (rupee_vol.rolling(window=20).mean().iloc[-1]) / 10000000
+        avg_rupee_vol_20 = (rupee_vol.rolling(window=20, min_periods=1).mean().iloc[-1]) / 10000000
         
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100 
@@ -324,8 +337,8 @@ for stock in all_unique_stocks:
             rs_52w_high = rs_raw.max()
             rs_off_high = ((rs_raw.iloc[-1] - rs_52w_high) / rs_52w_high) * 100 if pd.notna(rs_52w_high) and rs_52w_high > 0 else np.nan
             
-            rs_21ema = rs_raw.ewm(span=21, adjust=False).mean()
-            rs_dist_21ema = ((rs_raw.iloc[-1] - rs_21ema.iloc[-1]) / rs_21ema.iloc[-1]) * 100 if rs_21ema.iloc[-1] > 0 else np.nan
+            rs_21ema = rs_raw.ewm(span=21, adjust=False, min_periods=1).mean()
+            rs_dist_21ema = ((rs_raw.iloc[-1] - rs_21ema.iloc[-1]) / rs_21ema.iloc[-1]) * 100 if pd.notna(rs_21ema.iloc[-1]) and rs_21ema.iloc[-1] > 0 else np.nan
             
             rs_1w_chg = rs_raw.pct_change(periods=5).iloc[-1] * 100
             
@@ -373,11 +386,14 @@ def format_row(stock, scan_dict):
     current_rank = industry_rank_map.get(ind_key, "N/A")
     
     row = [
-        stock, current_rank, ind, round(td['adr'], 2), round(td['vol'], 2),
-        round(td['ret_1d'], 2), round(td['ret_1w'], 2), 
+        stock, current_rank, ind, 
+        round(td['adr'], 2) if pd.notna(td['adr']) else "", 
+        round(td['vol'], 2) if pd.notna(td['vol']) else "",
+        round(td['ret_1d'], 2) if pd.notna(td['ret_1d']) else "", 
+        round(td['ret_1w'], 2) if pd.notna(td['ret_1w']) else "", 
         round(td['ret_curr_wk_body'], 2) if pd.notna(td['ret_curr_wk_body']) else "",
         round(td['ret_prev_wk_body'], 2) if pd.notna(td['ret_prev_wk_body']) else "",
-        round(td['ret_1m'], 2),
+        round(td['ret_1m'], 2) if pd.notna(td['ret_1m']) else "",
         round(td['ret_prev_2m'], 2) if pd.notna(td['ret_prev_2m']) else "",
         round(td['dist_9'], 2) if pd.notna(td['dist_9']) else "",
         round(td['dist_21'], 2) if pd.notna(td['dist_21']) else "",
@@ -448,7 +464,20 @@ def write_to_sheet(tab_name, data):
     if len(data) > 1:
         col_letter = get_column_letter(len(headers))
         
-        ws.update(values=data, range_name='A1', value_input_option='USER_ENTERED')
+        # 🟢 BULLETPROOF JSON FIREWALL: Removes any hidden NaN or Infinity
+        safe_data = []
+        for row in data:
+            clean_row = []
+            for val in row:
+                if pd.isna(val): 
+                    clean_row.append("")
+                elif isinstance(val, (int, float, np.number)) and np.isinf(val):
+                    clean_row.append("")
+                else:
+                    clean_row.append(val)
+            safe_data.append(clean_row)
+        
+        ws.update(values=safe_data, range_name='A1', value_input_option='USER_ENTERED')
         ws.freeze(rows=1)
         ws.format(f'A1:{col_letter}1', {
             "backgroundColor": {"red": 0.1, "green": 0.2, "blue": 0.4},
