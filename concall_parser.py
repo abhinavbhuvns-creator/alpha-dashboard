@@ -3,19 +3,8 @@ import json
 import time
 import requests
 import pymupdf  # PyMuPDF
-import google.generativeai as genai
 import gspread
 from google.oauth2.service_account import Credentials
-
-# 1. Initialize Gemini API (Aggressive Sanitization)
-raw_api_key = os.environ.get("GEMINI_API_KEY", "")
-# Strip standard whitespace, newlines, tabs, and accidental quotation marks
-clean_api_key = raw_api_key.strip(' "\'\n\r\t')
-
-if not clean_api_key:
-    raise SystemExit("🛑 CRITICAL ERROR: GEMINI_API_KEY is missing or completely empty. Please check your GitHub Secrets!")
-
-genai.configure(api_key=clean_api_key)
 
 SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
 
@@ -34,8 +23,12 @@ def download_and_extract_pdf(pdf_url):
     return full_text
 
 def analyze_with_gemini(transcript_text, company_name):
-    """Forces Gemini 1.5 Flash to return pure JSON mapping to the dashboard matrix."""
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    """Bypasses the buggy Google Python library and uses a direct REST API call."""
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip(' "\'\n\r\t')
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY is missing or empty.")
+        
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
     
     prompt = f"""
     You are an expert equity research analyst. Analyze the following earnings call transcript for {company_name}.
@@ -58,11 +51,20 @@ def analyze_with_gemini(transcript_text, company_name):
     {transcript_text[:150000]} 
     """
     
-    response = model.generate_content(
-        prompt,
-        generation_config={"response_mime_type": "application/json"}
-    )
-    return json.loads(response.text)
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json"}
+    }
+    
+    headers = {'Content-Type': 'application/json'}
+    response = requests.post(url, headers=headers, json=payload)
+    
+    if response.status_code != 200:
+        raise Exception(f"Gemini API Failed: {response.text}")
+        
+    result_data = response.json()
+    raw_json_text = result_data['candidates'][0]['content']['parts'][0]['text']
+    return json.loads(raw_json_text)
 
 def main():
     print("Authenticating with Google Service Account...")
