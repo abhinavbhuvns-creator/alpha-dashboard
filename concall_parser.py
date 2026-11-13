@@ -9,9 +9,12 @@ from google.oauth2.service_account import Credentials
 SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
 
 def download_and_extract_pdf(pdf_url):
-    """Downloads the transcript PDF into memory and extracts all text."""
+    """Downloads the transcript PDF into memory and extracts all text with a 25-second timeout."""
     headers = {'User-Agent': 'Mozilla/5.0'}
-    response = requests.get(pdf_url, headers=headers)
+    
+    # 🟢 ADDED: Strict 25-second timeout so it never hangs on NSE's servers
+    response = requests.get(pdf_url, headers=headers, timeout=25)
+    response.raise_for_status()
     
     with open("temp_transcript.pdf", "wb") as f:
         f.write(response.content)
@@ -28,7 +31,6 @@ def analyze_with_gemini(transcript_text, company_name):
     if not api_key:
         raise ValueError("GEMINI_API_KEY is missing or empty.")
         
-    # 🟢 UPDATED TO ACTIVE GEMINI 2.5 FLASH ENDPOINT
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     
     prompt = f"""
@@ -58,7 +60,9 @@ def analyze_with_gemini(transcript_text, company_name):
     }
     
     headers = {'Content-Type': 'application/json'}
-    response = requests.post(url, headers=headers, json=payload)
+    
+    # 🟢 ADDED: Strict 45-second timeout so it never hangs on Google's servers
+    response = requests.post(url, headers=headers, json=payload, timeout=45)
     
     if response.status_code != 200:
         raise Exception(f"Gemini API Failed: {response.text}")
@@ -68,7 +72,8 @@ def analyze_with_gemini(transcript_text, company_name):
     return json.loads(raw_json_text)
 
 def main():
-    print("Authenticating with Google Service Account...")
+    # 🟢 ADDED: flush=True forces GitHub to print this immediately
+    print("Authenticating with Google Service Account...", flush=True)
     creds_json = os.environ.get('GOOGLE_CREDENTIALS')
     if not creds_json: raise SystemExit("🛑 Error: GOOGLE_CREDENTIALS not found in GitHub Secrets.")
     
@@ -79,7 +84,6 @@ def main():
     
     spreadsheet = gc.open_by_url(SINGLE_SHEET_URL)
     
-    # Check existing analyses to prevent duplicates
     try:
         analysis_ws = spreadsheet.worksheet("Concall_Analysis")
         existing_data = analysis_ws.get_all_records()
@@ -91,14 +95,14 @@ def main():
         analysis_ws.format('A1:M1', {'textFormat': {'bold': True}, "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}})
         processed_pdfs = []
 
-    print("Reading Corporate Announcements...")
+    print("Reading Corporate Announcements...", flush=True)
     try:
         corp_ws = spreadsheet.worksheet("Corporate_Announcements")
         corp_data = corp_ws.get_all_records()
     except Exception as e:
         raise SystemExit(f"🛑 Error: Could not read Corporate Announcements. {e}")
 
-    print("Scanning for new Earnings Call Transcripts...")
+    print("Scanning for new Earnings Call Transcripts...", flush=True)
     found_new = False
     
     for row in corp_data:
@@ -108,17 +112,15 @@ def main():
         symbol = str(row.get("NSE Code", ""))
         date = str(row.get("Date", ""))
         
-        # Trigger words that identify a transcript filing
         is_transcript = any(kw in announcement for kw in ["transcript", "earnings call transcript", "concall transcript", "call transcript"])
         
         if is_transcript and pdf_link and pdf_link.endswith(".pdf") and pdf_link not in processed_pdfs:
             found_new = True
-            print(f" -> Processing new transcript: {company} ({symbol})")
+            print(f" -> Processing new transcript: {company} ({symbol})", flush=True)
             try:
                 text = download_and_extract_pdf(pdf_link)
                 ai_data = analyze_with_gemini(text, company)
                 
-                # Format bullet points safely
                 def format_bullets(key):
                     items = ai_data.get(key, [])
                     if not items: return ""
@@ -140,14 +142,16 @@ def main():
                 
                 analysis_ws.append_row(new_row)
                 processed_pdfs.append(pdf_link)
-                print(f"✅ Saved analysis for {symbol}")
-                time.sleep(3)  # Respect API rate limits
+                print(f"✅ Saved analysis for {symbol}", flush=True)
+                time.sleep(3) 
                 
+            except requests.exceptions.Timeout:
+                print(f"⚠️ Timeout Error: Download or Gemini API took too long for {symbol}. Skipping.", flush=True)
             except Exception as e:
-                print(f"⚠️ Error processing {symbol}: {e}")
+                print(f"⚠️ Error processing {symbol}: {e}", flush=True)
 
     if not found_new:
-        print("No new transcripts found today. All caught up!")
+        print("No new transcripts found today. All caught up!", flush=True)
 
 if __name__ == "__main__":
     main()
