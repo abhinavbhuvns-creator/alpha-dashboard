@@ -2,13 +2,16 @@ import os
 import json
 import time
 import requests
-import fitz  # PyMuPDF
+import pymupdf  # Replaced deprecated fitz
 import google.generativeai as genai
 import gspread
 from google.oauth2.service_account import Credentials
 
-# 1. Initialize Gemini API
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+# 1. Initialize Gemini API (Now strictly strips hidden spaces/newlines)
+raw_api_key = os.environ.get("GEMINI_API_KEY", "")
+clean_api_key = raw_api_key.strip()
+genai.configure(api_key=clean_api_key)
+
 SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
 
 def download_and_extract_pdf(pdf_url):
@@ -19,7 +22,7 @@ def download_and_extract_pdf(pdf_url):
     with open("temp_transcript.pdf", "wb") as f:
         f.write(response.content)
         
-    doc = fitz.open("temp_transcript.pdf")
+    doc = pymupdf.open("temp_transcript.pdf")
     full_text = "\n".join([page.get_text() for page in doc])
     doc.close()
     os.remove("temp_transcript.pdf")
