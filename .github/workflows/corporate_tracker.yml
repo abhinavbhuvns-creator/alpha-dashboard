@@ -21,7 +21,7 @@ jobs:
       - name: Install dependencies
         run: pip install requests pandas gspread google-auth PyMuPDF google-generativeai
 
-      - name: Run Announcement Tracker and AI Parser
+      - name: Run Announcement Tracker, Concall Parser, and Financial Results Parser
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -29,3 +29,4 @@ jobs:
         run: |
           python corporate_tracker.py
           python concall_parser.py
+          python financial_results_parser.py
