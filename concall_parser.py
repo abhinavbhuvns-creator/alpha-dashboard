@@ -28,7 +28,8 @@ def analyze_with_gemini(transcript_text, company_name):
     if not api_key:
         raise ValueError("GEMINI_API_KEY is missing or empty.")
         
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    # 🟢 UPDATED TO ACTIVE GEMINI 2.5 FLASH ENDPOINT
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     
     prompt = f"""
     You are an expert equity research analyst. Analyze the following earnings call transcript for {company_name}.
