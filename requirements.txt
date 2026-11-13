@@ -6,3 +6,4 @@ google-auth
 matplotlib
 PyMuPDF
 google-generativeai
+requests
