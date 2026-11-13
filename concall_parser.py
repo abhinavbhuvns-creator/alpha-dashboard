@@ -2,14 +2,19 @@ import os
 import json
 import time
 import requests
-import pymupdf  # Replaced deprecated fitz
+import pymupdf  # PyMuPDF
 import google.generativeai as genai
 import gspread
 from google.oauth2.service_account import Credentials
 
-# 1. Initialize Gemini API (Now strictly strips hidden spaces/newlines)
+# 1. Initialize Gemini API (Aggressive Sanitization)
 raw_api_key = os.environ.get("GEMINI_API_KEY", "")
-clean_api_key = raw_api_key.strip()
+# Strip standard whitespace, newlines, tabs, and accidental quotation marks
+clean_api_key = raw_api_key.strip(' "\'\n\r\t')
+
+if not clean_api_key:
+    raise SystemExit("🛑 CRITICAL ERROR: GEMINI_API_KEY is missing or completely empty. Please check your GitHub Secrets!")
+
 genai.configure(api_key=clean_api_key)
 
 SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
