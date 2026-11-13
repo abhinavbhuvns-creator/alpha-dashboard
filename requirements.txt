@@ -4,3 +4,5 @@ yfinance
 gspread
 google-auth
 matplotlib
+PyMuPDF
+google-generativeai
