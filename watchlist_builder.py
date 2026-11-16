@@ -8,31 +8,21 @@ import yfinance as yf
 import gspread
 import requests
 from google.oauth2.service_account import Credentials
-
 warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 warnings.filterwarnings('ignore', message='.*Parsing dates.*')
 pd.options.mode.chained_assignment = None
 
-# ==========================================
-# 1. AUTHENTICATE USING GITHUB SECRETS
-# ==========================================
-print("Authenticating with Google Service Account...")
 creds_json = os.environ.get('GOOGLE_CREDENTIALS')
 if not creds_json:
     raise SystemExit("🛑 Error: GOOGLE_CREDENTIALS not found in GitHub Secrets.")
-
 creds_dict = json.loads(creds_json)
 scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(creds)
-
 SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
 master_ss = gc.open_by_url(SINGLE_SHEET_URL)
 target_ss = gc.open_by_url(SINGLE_SHEET_URL)
 
-# ==========================================
-# 2. GET INDUSTRY MAPPING & MARKETSMITH
-# ==========================================
 MS_COLS = [
     "EPS_Rating", "RS_Rating", "AD_Rating", "Group_Rank", "Composite_Strength", 
     "SMR_Strength", "RS_3_Mth", "RS_6_Mth", "Sales_Percentage_Chg_Last_Qtr", 
@@ -44,14 +34,11 @@ MS_COLS = [
     "Percentage_from_Pivot_Weekly", "Days_from_Pivot", "Weeks_from_Pivot", 
     "Blue_Dot_Count"
 ]
-
-print("Mapping stocks to industries from Unified Sheet...")
 master_ws = master_ss.worksheet("Avg_Rupee_Volume_Master")
 master_data = master_ws.get_all_records()
 df_master = pd.DataFrame(master_data)
 stock_to_industry = df_master.set_index('Symbol')['Industry Group'].to_dict()
 
-print("Reading Marketsmith Database...")
 try:
     ms_ws = master_ss.worksheet("marketsmith database")
     df_ms = pd.DataFrame(ms_ws.get_all_records())
@@ -61,7 +48,6 @@ try:
     else:
         ms_dict = {}
 except Exception as e:
-    print(f"Warning: Could not read Marketsmith tab: {e}")
     ms_dict = {}
 
 print("Fetching Industry Ranks...")
@@ -72,27 +58,18 @@ try:
     if len(rank_data) > 1:
         headers = [h.lower() for h in rank_data[0]]
         df_ranks = pd.DataFrame(rank_data[1:], columns=headers)
-        
         ind_col = next((c for c in headers if "industry" in c), None)
         rank_col = next((c for c in headers if "rank" in c and "history" not in c), None)
         if ind_col and rank_col:
             industry_rank_map = df_ranks.set_index(ind_col)[rank_col].to_dict()
 except Exception as e:
-    print(f"Warning: Could not fetch Industry Ranks properly: {e}")
+    pass
 
-# ==========================================
-# 3. FETCH DYNAMIC SETTINGS FROM TARGET SHEET
-# ==========================================
 print("Reading 'Settings' tab for dynamic scanners and timeframes...")
-try:
-    settings_ws = target_ss.worksheet("Settings")
-    settings_data = settings_ws.get_all_values()
-except gspread.exceptions.WorksheetNotFound:
-    raise SystemExit("🛑 CRITICAL ERROR: Could not find the 'Settings' tab in your Target Sheet.")
-
+settings_ws = target_ss.worksheet("Settings")
+settings_data = settings_ws.get_all_values()
 scanners = []
 rules_universe = {}
-
 for row in settings_data[1:]:
     if len(row) >= 2:
         scan_name = row[0].strip()
@@ -103,22 +80,14 @@ for row in settings_data[1:]:
         rules_universe[scan_name] = days
 
 all_tabs = target_ss.worksheets()
-tab_mapping = {}
-for sheet in all_tabs:
-    normalized_name = sheet.title.replace(" ", "").upper()
-    tab_mapping[normalized_name] = sheet
-
+tab_mapping = {sheet.title.replace(" ", "").upper(): sheet for sheet in all_tabs}
 all_dates = []
 raw_scanner_data = {}
-
 for scan in scanners:
     target_name = scan.replace(" ", "").upper()
     if target_name == "SIXMONTHSTRENGTH" and "6MONTHSTRENGTH" in tab_mapping:
         target_name = "6MONTHSTRENGTH"
-        
-    if target_name not in tab_mapping:
-        continue
-        
+    if target_name not in tab_mapping: continue
     ws = tab_mapping[target_name]
     data = ws.get_all_values()
     raw_scanner_data[scan] = data
@@ -126,119 +95,67 @@ for scan in scanners:
         if len(row) >= 2 and row[0] != "Trigger Date":
             try: all_dates.append(pd.to_datetime(row[0].strip(), format='mixed', dayfirst=True).normalize()) 
             except: pass
-
 latest_trading_date = max(all_dates) if all_dates else pd.Timestamp.today().normalize()
-print(f"Latest Market Date identified as: {latest_trading_date.strftime('%Y-%m-%d')}")
 
 universe_tracker = {}
-oneday_tracker = {}
-
 for scan, data in raw_scanner_data.items():
     if len(data) <= 1: continue
     lookback_days = rules_universe.get(scan, 0)
     cutoff_date_univ = latest_trading_date - pd.Timedelta(days=lookback_days)
-    
     for row in data[1:]:
         if len(row) < 2: continue
         stock = row[1].strip().upper() 
         if not stock or stock == "STOCK SYMBOL": continue
-        
-        if lookback_days >= 9000:
-            if stock not in universe_tracker: universe_tracker[stock] = {s: "No" for s in scanners}
-            universe_tracker[stock][scan] = "Yes"
-            if stock not in oneday_tracker: oneday_tracker[stock] = {s: "No" for s in scanners}
-            oneday_tracker[stock][scan] = "Yes"
-            continue
-            
         try: trigger_date = pd.to_datetime(row[0].strip(), format='mixed', dayfirst=True).normalize() 
         except: continue
-        
         if trigger_date >= cutoff_date_univ:
             if stock not in universe_tracker: universe_tracker[stock] = {s: "No" for s in scanners}
             universe_tracker[stock][scan] = "Yes"
-            
-        if trigger_date == latest_trading_date:
-            if stock not in oneday_tracker: oneday_tracker[stock] = {s: "No" for s in scanners}
-            oneday_tracker[stock][scan] = "Yes"
 
-all_unique_stocks = list(set(universe_tracker.keys()) | set(oneday_tracker.keys()))
+all_unique_stocks = list(universe_tracker.keys())
 print(f"Found {len(all_unique_stocks)} unique stocks matching timeframe rules.")
 
-# ==========================================
-# 4. DOWNLOAD TECHNICAL DATA
-# ==========================================
-print("Downloading recent technical data for shortlisted stocks...")
 tickers = [s + '.NS' for s in all_unique_stocks]
-
 session = requests.Session()
-session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-})
-
-print("\nFetching Benchmark Index separately to guarantee data integrity...")
+session.headers.update({'User-Agent': 'Mozilla/5.0'})
 bench_close = None
-for b in ['^CNXSC', '^CRSLDX', '^NSEI']:
+for b in ['^CRSLDX', '^NSEI']:
     try:
         b_data = yf.download(b, period="250d", session=session, progress=False)
         if not b_data.empty and 'Close' in b_data:
             bench_close = b_data['Close']
-            if isinstance(bench_close, pd.DataFrame): 
-                bench_close = bench_close.iloc[:, 0]
+            if isinstance(bench_close, pd.DataFrame): bench_close = bench_close.iloc[:, 0]
             bench_close = bench_close.ffill()
             bench_close.index = pd.to_datetime(bench_close.index).tz_localize(None).normalize()
-            print(f" -> Successfully fetched benchmark: {b}")
             break
-    except Exception:
-        continue
+    except: continue
 
 chunk_size = 20
 ticker_chunks = [tickers[i:i + chunk_size] for i in range(0, len(tickers), chunk_size)]
 all_chunks = []
-
 if len(tickers) > 0:
-    for i, chunk in enumerate(ticker_chunks):
-        print(f" -> Downloading price batch {i+1} of {len(ticker_chunks)}...")
-        success = False
-        for attempt in range(5):
+    for chunk in ticker_chunks:
+        for _ in range(5):
             try:
                 chunk_data = yf.download(chunk, period="250d", group_by="ticker", threads=False, progress=False, session=session)
-                if chunk_data.empty and len(chunk) > 0: raise ValueError("Empty data returned by Yahoo.")
-                all_chunks.append(chunk_data)
-                success = True
-                break 
-            except Exception as e:
-                wait_time = 30 * (attempt + 1)
-                print(f"    [!] Yahoo IP Blocked. Pausing script for {wait_time} seconds... (Attempt {attempt+1}/5)")
-                time.sleep(wait_time)
-        
-        if not success:
-            raise SystemExit(f"🛑 CRITICAL ERROR: Yahoo permanently blocked batch {i+1}. Run the dashboard again later.")
-        time.sleep(5) 
-        
-    if all_chunks: 
-        data = pd.concat(all_chunks, axis=1)
+                if not chunk_data.empty or len(chunk) == 0:
+                    all_chunks.append(chunk_data)
+                    break
+            except: time.sleep(15)
+        time.sleep(3)
+    data = pd.concat(all_chunks, axis=1) if all_chunks else pd.DataFrame()
+    if not data.empty:
         data.index = pd.to_datetime(data.index).tz_localize(None).normalize()
         data = data.groupby(data.index).max()
-    else: data = pd.DataFrame()
 else:
     data = pd.DataFrame()
 
-
 tech_data = {}
-print("Calculating EMAs, Returns, Squeeze Metric, ATR Distances, ADR, and RS Metrics...")
-
 for stock in all_unique_stocks:
     ticker = stock + '.NS'
     if ticker == '^CNXSC': continue
-    
     try:
-        if len(tickers) == 1: df = data.copy()
-        else:
-            if ticker not in data.columns.levels[0]: continue
-            df = data[ticker].copy()
-            
-        df = df.dropna(subset=['Close'])
-        # 🟢 IPO Fix: Dropped limit from 150 to 5 days
+        df = data[ticker].copy().dropna(subset=['Close']) if len(tickers)>1 else data.copy().dropna(subset=['Close'])
         if df.empty or len(df) < 5: continue
         
         df['tr1'] = df['High'] - df['Low']
@@ -248,9 +165,10 @@ for stock in all_unique_stocks:
         atr_14 = df['TR'].rolling(14, min_periods=1).mean().iloc[-1]
         close = df['Close'].iloc[-1]
         
-        high_52w = df['High'].max()
+        lookback_bars = min(252, len(df))
+        high_52w = df['High'].tail(lookback_bars).max()
         safe_low_series = df['Low'].replace(0, np.nan)
-        low_52w = safe_low_series.min()
+        low_52w = safe_low_series.tail(lookback_bars).min()
         
         pct_off_high = ((close - high_52w) / high_52w) * 100 if pd.notna(high_52w) and high_52w != 0 else np.nan
         pct_above_low = ((close - low_52w) / low_52w) * 100 if pd.notna(low_52w) and low_52w != 0 else np.nan
@@ -258,17 +176,11 @@ for stock in all_unique_stocks:
         ema_9 = df['Close'].ewm(span=9, adjust=False, min_periods=1).mean().iloc[-1]
         ema_21 = df['Close'].ewm(span=21, adjust=False, min_periods=1).mean().iloc[-1]
         ema_50 = df['Close'].ewm(span=50, adjust=False, min_periods=1).mean().iloc[-1]
-        ema_150 = df['Close'].ewm(span=150, adjust=False, min_periods=1).mean().iloc[-1]
         
         weekly_df = df.resample('W-FRI').agg({'Open': 'first', 'Close': 'last'}).dropna()
+        wk_sma_4 = weekly_df['Close'].rolling(4).mean().iloc[-1] if len(weekly_df) >= 10 else np.nan
+        wk_sma_10 = weekly_df['Close'].rolling(10).mean().iloc[-1] if len(weekly_df) >= 10 else np.nan
         
-        if len(weekly_df) >= 10:
-            wk_sma_4 = weekly_df['Close'].rolling(4).mean().iloc[-1]
-            wk_sma_10 = weekly_df['Close'].rolling(10).mean().iloc[-1]
-        else:
-            wk_sma_4 = np.nan
-            wk_sma_10 = np.nan
-            
         dist_9 = (close - ema_9) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_21 = (close - ema_21) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_50 = (close - ema_50) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
@@ -279,28 +191,13 @@ for stock in all_unique_stocks:
         l_vals = df['Low'].values
         active_gaps = []
         for j in range(1, len(c_vals)):
-            prev_c = c_vals[j-1]
-            curr_l = l_vals[j]
-            curr_c = c_vals[j]
-            if curr_l > prev_c:
-                active_gaps.append([curr_l, prev_c])
+            if l_vals[j] > c_vals[j-1]: active_gaps.append([l_vals[j], c_vals[j-1]])
             for k in range(len(active_gaps)-1, -1, -1):
-                if curr_c < active_gaps[k][0]:
-                    if curr_c <= active_gaps[k][1]:
-                        active_gaps.pop(k)
-                    else:
-                        active_gaps[k][0] = curr_c
+                if c_vals[j] < active_gaps[k][0]:
+                    if c_vals[j] <= active_gaps[k][1]: active_gaps.pop(k)
+                    else: active_gaps[k][0] = c_vals[j]
             if len(active_gaps) > 20: active_gaps.pop(0)
-            
-        nearest_sg_top = np.nan
-        if active_gaps:
-            min_diff = float('inf')
-            for gap in active_gaps:
-                diff = close - gap[0]
-                if diff >= 0 and diff < min_diff:
-                    min_diff = diff
-                    nearest_sg_top = gap[0]
-                    
+        nearest_sg_top = active_gaps[-1][0] if active_gaps else np.nan
         dist_sg = (close - nearest_sg_top) / atr_14 if pd.notna(atr_14) and atr_14 != 0 and pd.notna(nearest_sg_top) else np.nan
         
         rupee_vol = df['Close'] * df['Volume']
@@ -308,53 +205,28 @@ for stock in all_unique_stocks:
         
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100 
-        
-        if len(weekly_df) >= 2:
-            ret_curr_wk_body = ((weekly_df['Close'].iloc[-1] / weekly_df['Open'].iloc[-1]) - 1) * 100
-            ret_prev_wk_body = ((weekly_df['Close'].iloc[-2] / weekly_df['Open'].iloc[-2]) - 1) * 100
-        else:
-            ret_curr_wk_body = np.nan
-            ret_prev_wk_body = np.nan
-            
+        ret_curr_wk_body = ((weekly_df['Close'].iloc[-1] / weekly_df['Open'].iloc[-1]) - 1) * 100 if len(weekly_df) >= 2 else np.nan
+        ret_prev_wk_body = ((weekly_df['Close'].iloc[-2] / weekly_df['Open'].iloc[-2]) - 1) * 100 if len(weekly_df) >= 2 else np.nan
         ret_1m = df['Close'].pct_change(periods=21).iloc[-1] * 100
+        ret_prev_2m = ((df['Close'].iloc[-22] / df['Close'].iloc[-64]) - 1) * 100 if len(df) >= 64 else np.nan
         
-        if len(df) >= 64:
-            close_1m_ago = df['Close'].iloc[-22]
-            close_3m_ago = df['Close'].iloc[-64]
-            ret_prev_2m = ((close_1m_ago / close_3m_ago) - 1) * 100
-        else:
-            ret_prev_2m = np.nan
-            
-        df['Safe_Low'] = df['Low'].replace(0, np.nan)
-        daily_range = (df['High'] / df['Safe_Low']) - 1
-        adr_20 = daily_range.replace([np.inf, -np.inf], np.nan).rolling(window=20, min_periods=5).mean().iloc[-1] * 100
+        adr_20 = ((df['High'] / df['Low'].replace(0, np.nan)) - 1).rolling(window=20, min_periods=5).mean().iloc[-1] * 100
         
-        # 🟢 RS LINE DYNAMIC METRICS
         if bench_close is not None:
             aligned_bench = bench_close.reindex(df.index).ffill()
             rs_raw = (df['Close'] / aligned_bench) * 100
-            
-            rs_52w_high = rs_raw.max()
-            rs_off_high = ((rs_raw.iloc[-1] - rs_52w_high) / rs_52w_high) * 100 if pd.notna(rs_52w_high) and rs_52w_high > 0 else np.nan
-            
-            rs_21ema = rs_raw.ewm(span=21, adjust=False, min_periods=1).mean()
-            rs_dist_21ema = ((rs_raw.iloc[-1] - rs_21ema.iloc[-1]) / rs_21ema.iloc[-1]) * 100 if pd.notna(rs_21ema.iloc[-1]) and rs_21ema.iloc[-1] > 0 else np.nan
-            
+            rs_off_high = ((rs_raw.iloc[-1] - rs_raw.tail(lookback_bars).max()) / rs_raw.tail(lookback_bars).max()) * 100
+            rs_dist_21ema = ((rs_raw.iloc[-1] - rs_raw.ewm(span=21).mean().iloc[-1]) / rs_raw.ewm(span=21).mean().iloc[-1]) * 100
             rs_1w_chg = rs_raw.pct_change(periods=5).iloc[-1] * 100
-            
-            stock_ret = df['Close'].pct_change()
-            bench_ret = aligned_bench.pct_change()
-            is_out = (stock_ret > bench_ret).astype(int)
-            
+            is_out = (df['Close'].pct_change() > aligned_bench.pct_change()).astype(int)
             rs_out_10d = (is_out.tail(10).sum() / 10.0) * 100 if len(is_out) >= 10 else np.nan
             rs_out_20d = (is_out.tail(20).sum() / 20.0) * 100 if len(is_out) >= 20 else np.nan
             rs_out_50d = (is_out.tail(50).sum() / 50.0) * 100 if len(is_out) >= 50 else np.nan
         else:
             rs_off_high = rs_dist_21ema = rs_1w_chg = rs_out_10d = rs_out_20d = rs_out_50d = np.nan
-        
+            
         tech_data[stock] = {
-            "close": close, "ema_21": ema_21, "ema_50": ema_50, "ema_150": ema_150,
-            "vol": avg_rupee_vol_20, "ret_1d": ret_1d, "ret_1w": ret_1w, 
+            "close": close, "vol": avg_rupee_vol_20, "ret_1d": ret_1d, "ret_1w": ret_1w, 
             "ret_curr_wk_body": ret_curr_wk_body, "ret_prev_wk_body": ret_prev_wk_body, 
             "ret_1m": ret_1m, "ret_prev_2m": ret_prev_2m, "adr": adr_20,
             "dist_9": dist_9, "dist_21": dist_21, "dist_50": dist_50,
@@ -363,135 +235,4 @@ for stock in all_unique_stocks:
             "rs_off_high": rs_off_high, "rs_dist_21ema": rs_dist_21ema, "rs_1w_chg": rs_1w_chg,
             "rs_out_10d": rs_out_10d, "rs_out_20d": rs_out_20d, "rs_out_50d": rs_out_50d
         }
-    except Exception as e: continue
-
-# ==========================================
-# 5. BUILD THE THREE LISTS
-# ==========================================
-headers = [
-    "Stock Symbol", "Ind Rank", "Industry Group", "ADR %", "Avg Rupee Vol (Cr)",
-    "1 Day Return %", "1 Week Return %", "Curr Wk Body %", "Prev Wk Body %", "1 Month Return %", "Prev 2M Return (Ending 1M Ago) %",
-    "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)", 
-    "Supp Gap (ATR)", "% above 52W Low", "% off 52W High",
-    "RS Line % off 52W High", "% Dist from RS 21 EMA", "RS Line 1W Change %", 
-    "RS Outperform (10D) %", "RS Outperform (20D) %", "RS Outperform (50D) %"
-] + MS_COLS + scanners
-
-def format_row(stock, scan_dict):
-    td = tech_data.get(stock)
-    if not td: return None
-    ind = stock_to_industry.get(stock, "Uncategorized")
-    
-    ind_key = ind.lower() if isinstance(ind, str) else ""
-    current_rank = industry_rank_map.get(ind_key, "N/A")
-    
-    row = [
-        stock, current_rank, ind, 
-        round(td['adr'], 2) if pd.notna(td['adr']) else "", 
-        round(td['vol'], 2) if pd.notna(td['vol']) else "",
-        round(td['ret_1d'], 2) if pd.notna(td['ret_1d']) else "", 
-        round(td['ret_1w'], 2) if pd.notna(td['ret_1w']) else "", 
-        round(td['ret_curr_wk_body'], 2) if pd.notna(td['ret_curr_wk_body']) else "",
-        round(td['ret_prev_wk_body'], 2) if pd.notna(td['ret_prev_wk_body']) else "",
-        round(td['ret_1m'], 2) if pd.notna(td['ret_1m']) else "",
-        round(td['ret_prev_2m'], 2) if pd.notna(td['ret_prev_2m']) else "",
-        round(td['dist_9'], 2) if pd.notna(td['dist_9']) else "",
-        round(td['dist_21'], 2) if pd.notna(td['dist_21']) else "",
-        round(td['dist_50'], 2) if pd.notna(td['dist_50']) else "",
-        round(td['dist_w4'], 2) if pd.notna(td['dist_w4']) else "",
-        round(td['dist_w10'], 2) if pd.notna(td['dist_w10']) else "",
-        round(td['dist_sg'], 2) if pd.notna(td['dist_sg']) else "",
-        round(td['above_low'], 2) if pd.notna(td['above_low']) else "",
-        round(td['off_high'], 2) if pd.notna(td['off_high']) else "",
-        round(td['rs_off_high'], 2) if pd.notna(td['rs_off_high']) else "",
-        round(td['rs_dist_21ema'], 2) if pd.notna(td['rs_dist_21ema']) else "",
-        round(td['rs_1w_chg'], 2) if pd.notna(td['rs_1w_chg']) else "",
-        round(td['rs_out_10d'], 2) if pd.notna(td['rs_out_10d']) else "",
-        round(td['rs_out_20d'], 2) if pd.notna(td['rs_out_20d']) else "",
-        round(td['rs_out_50d'], 2) if pd.notna(td['rs_out_50d']) else ""
-    ]
-    
-    ms_data = ms_dict.get(stock, {})
-    for col in MS_COLS:
-        val = ms_data.get(col, "N/A")
-        if val == "": val = "N/A"
-        row.append(val)
-        
-    for scan in scanners:
-        row.append(scan_dict.get(scan, "No"))
-    return row
-
-def passes_ema_rules(stock):
-    td = tech_data.get(stock)
-    if not td: return False
-    return (td['ema_21'] > td['ema_50']) and (td['ema_50'] > td['ema_150']) and (td['close'] > td['ema_50'])
-
-universe_output = [headers]
-for stock, scans in universe_tracker.items():
-    row = format_row(stock, scans)
-    if row: universe_output.append(row)
-
-watchlist_output = [headers]
-for stock, scans in universe_tracker.items():
-    if passes_ema_rules(stock):
-        row = format_row(stock, scans)
-        if row: watchlist_output.append(row)
-
-oneday_output = [headers]
-for stock, scans in oneday_tracker.items():
-    if passes_ema_rules(stock):
-        row = format_row(stock, scans)
-        if row: oneday_output.append(row)
-
-# ==========================================
-# 6. EXPORT TO GOOGLE SHEETS
-# ==========================================
-def get_column_letter(col_idx):
-    col_str = ""
-    while col_idx > 0:
-        col_idx, remainder = divmod(col_idx - 1, 26)
-        col_str = chr(65 + remainder) + col_str
-    return col_str
-
-def write_to_sheet(tab_name, data):
-    print(f"Writing to '{tab_name}'...")
-    try:
-        ws = target_ss.worksheet(tab_name)
-        ws.clear()
-    except gspread.exceptions.WorksheetNotFound:
-        ws = target_ss.add_worksheet(title=tab_name, rows="1000", cols="50")
-        
-    if len(data) > 1:
-        col_letter = get_column_letter(len(headers))
-        
-        # 🟢 BULLETPROOF JSON FIREWALL: Removes any hidden NaN or Infinity
-        safe_data = []
-        for row in data:
-            clean_row = []
-            for val in row:
-                if pd.isna(val): 
-                    clean_row.append("")
-                elif isinstance(val, (int, float, np.number)) and np.isinf(val):
-                    clean_row.append("")
-                else:
-                    clean_row.append(val)
-            safe_data.append(clean_row)
-        
-        ws.update(values=safe_data, range_name='A1', value_input_option='USER_ENTERED')
-        ws.freeze(rows=1)
-        ws.format(f'A1:{col_letter}1', {
-            "backgroundColor": {"red": 0.1, "green": 0.2, "blue": 0.4},
-            "horizontalAlignment": "CENTER",
-            "textFormat": {"foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}, "bold": True}
-        })
-        print(f" -> Generated {len(data)-1} stocks.")
-    else:
-        ws.update(values=[["No stocks met criteria."]], range_name='A1', value_input_option='USER_ENTERED')
-        print(" -> 0 stocks matched.")
-
-print("\nFinalizing outputs...")
-write_to_sheet("universe", universe_output)
-write_to_sheet("watchlist", watchlist_output)
-write_to_sheet("watchlist one day", oneday_output)
-
-print("\nDashboard Creation Complete! All 3 tabs are ready in your Target Sheet.")
+    except: continue
