@@ -7,26 +7,17 @@ import numpy as np
 import yfinance as yf
 import gspread
 from google.oauth2.service_account import Credentials
-
 warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 pd.options.mode.chained_assignment = None
 
-# ==========================================
-# 1. AUTHENTICATE USING GITHUB SECRETS
-# ==========================================
-print("Authenticating with Google Service Account...")
 creds_json = os.environ.get('GOOGLE_CREDENTIALS')
 if not creds_json:
     raise SystemExit("🛑 Error: GOOGLE_CREDENTIALS not found in GitHub Secrets.")
-
 creds_dict = json.loads(creds_json)
 scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(creds)
 
-# ==========================================
-# 2. READ UNIFIED SHEET & MARKETSMITH
-# ==========================================
 SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
 master_ss = gc.open_by_url(SINGLE_SHEET_URL)
 target_ss = gc.open_by_url(SINGLE_SHEET_URL)
@@ -44,12 +35,8 @@ MS_COLS = [
 ]
 
 print("Reading Tickers, Volumes, and Industries from Unified Sheet...")
-try:
-    master_ws = master_ss.worksheet("Avg_Rupee_Volume_Master")
-    master_data = master_ws.get_all_records()
-except Exception as e:
-    raise SystemExit(f"🛑 Error reading Master Data: {e}")
-
+master_ws = master_ss.worksheet("Avg_Rupee_Volume_Master")
+master_data = master_ws.get_all_records()
 master_df = pd.DataFrame(master_data)
 if 'Symbol' not in master_df.columns:
     raise SystemExit("🛑 Error: Could not find 'Symbol' column in the Master Sheet.")
@@ -64,19 +51,15 @@ try:
     else:
         ms_dict = {}
 except Exception as e:
-    print(f"Warning: Could not read Marketsmith tab: {e}")
     ms_dict = {}
 
 tickers = (master_df['Symbol'].str.strip() + '.NS').tolist()
 industry_map = master_df.set_index('Symbol')['Industry Group'].to_dict()
 volume_map = master_df.set_index('Symbol')['Avg_Rupee_Volume_Crores'].to_dict()
 
-# ==========================================
-# 3. BULLETPROOF BENCHMARK FETCHER
-# ==========================================
 print("\nFetching Benchmark Index separately to guarantee data integrity...")
 bench_close = None
-for b in ['^CNXSC', '^CRSLDX', '^NSEI']:
+for b in ['^CRSLDX', '^NSEI']:
     try:
         b_data = yf.download(b, period="2y", progress=False)
         if not b_data.empty and 'Close' in b_data:
@@ -90,25 +73,19 @@ for b in ['^CNXSC', '^CRSLDX', '^NSEI']:
     except Exception:
         continue
 
-# ==========================================
-# 4. VECTORIZED DATA DOWNLOAD (SAFE BATCHED)
-# ==========================================
 def chunker(seq, size):
     return (seq[pos:pos + size] for pos in range(0, len(seq), size))
 
 print(f"Downloading 2 years of history for {len(tickers)} stocks in safe batches...")
 all_chunks = []
 ticker_chunks = list(chunker(tickers, 400))
-
 for i, chunk in enumerate(ticker_chunks):
     print(f" -> Downloading price batch {i+1} of {len(ticker_chunks)}...")
     chunk_data = yf.download(chunk, period="2y", group_by="ticker", threads=True, progress=False)
     all_chunks.append(chunk_data)
     if i < len(ticker_chunks) - 1:
         time.sleep(2)
-
 data = pd.concat(all_chunks, axis=1)
-
 if not data.empty:
     data.index = pd.to_datetime(data.index).tz_localize(None).normalize()
     data = data.groupby(data.index).max()
@@ -118,43 +95,32 @@ vol_df = pd.DataFrame({t: data[t]['Volume'] for t in tickers if t in data.column
 low_df = pd.DataFrame({t: data[t]['Low'] for t in tickers if t in data.columns.levels[0]}).ffill()
 high_df = pd.DataFrame({t: data[t]['High'] for t in tickers if t in data.columns.levels[0]}).ffill()
 
-# 🟢 Align Benchmark and Calc Matrix for entire market
 if bench_close is not None:
     aligned_bench = bench_close.reindex(close_df.index).ffill()
-    
     rs_raw_df = close_df.div(aligned_bench, axis=0) * 100
-    rs_52w_max_df = rs_raw_df.rolling(window=252, min_periods=200).max()
+    rs_52w_max_df = rs_raw_df.rolling(window=252, min_periods=50).max()
     rs_off_high_df = ((rs_raw_df - rs_52w_max_df) / rs_52w_max_df) * 100
     
     rs_21ema_df = rs_raw_df.ewm(span=21, adjust=False).mean()
     rs_dist_21ema_df = ((rs_raw_df - rs_21ema_df) / rs_21ema_df) * 100
-    
     rs_1w_chg_df = rs_raw_df.pct_change(periods=5, fill_method=None) * 100
     
     stock_ret_df = close_df.pct_change(fill_method=None)
     bench_ret_df = aligned_bench.pct_change(fill_method=None)
-    
     outperf_df = stock_ret_df.gt(bench_ret_df, axis=0).astype(int)
     rs_out_10d_df = (outperf_df.rolling(10).sum() / 10.0) * 100
     rs_out_20d_df = (outperf_df.rolling(20).sum() / 20.0) * 100
     rs_out_50d_df = (outperf_df.rolling(50).sum() / 50.0) * 100
 
-# ==========================================
-# 5. CRUNCH TECHNICALS, POCKET PIVOT & ATR
-# ==========================================
-print("Crunching technical criteria, ATR Distances, and Weekly Pocket Pivots...")
 safe_low = low_df.replace(0, np.nan)
-low_52w = safe_low.rolling(window=252, min_periods=200).min()
-max_high_252 = high_df.rolling(window=252, min_periods=200).max()
+low_52w = safe_low.rolling(window=252, min_periods=50).min()
+max_high_252 = high_df.rolling(window=252, min_periods=50).max()
 avg_vol_50 = vol_df.rolling(window=50).mean()
-max_vol_252 = vol_df.rolling(window=252, min_periods=200).max()
+max_vol_252 = vol_df.rolling(window=252, min_periods=50).max()
 prev_max_close_252 = close_df.shift(1).rolling(window=252, min_periods=1).max()
-
 raw_daily_range = (high_df / safe_low) - 1
 adr_20_df = raw_daily_range.replace([np.inf, -np.inf], np.nan).rolling(window=20, min_periods=5).mean() * 100
-
 base_rules = close_df > 40
-
 ema_9_df = close_df.ewm(span=9, adjust=False, min_periods=1).mean()
 ema_21_df = close_df.ewm(span=21, adjust=False, min_periods=1).mean()
 ema_50_df = close_df.ewm(span=50, adjust=False, min_periods=1).mean()
@@ -168,7 +134,6 @@ atr_14_df = tr_df.rolling(window=14, min_periods=1).mean().replace(0, np.nan)
 weekly_close_df = close_df.resample('W-FRI').last()
 daily_sma_4_df = weekly_close_df.rolling(4, min_periods=1).mean().reindex(close_df.index, method='ffill')
 daily_sma_10_df = weekly_close_df.rolling(10, min_periods=1).mean().reindex(close_df.index, method='ffill')
-
 dist_9_df = (close_df - ema_9_df) / atr_14_df
 dist_21_df = (close_df - ema_21_df) / atr_14_df
 dist_50_df = (close_df - ema_50_df) / atr_14_df
@@ -176,13 +141,37 @@ dist_w4_df = (close_df - daily_sma_4_df) / atr_14_df
 dist_w10_df = (close_df - daily_sma_10_df) / atr_14_df
 
 pp_mask_df = pd.DataFrame(False, index=close_df.index, columns=close_df.columns)
+rs_bp_mask_df = pd.DataFrame(False, index=close_df.index, columns=close_df.columns)
+rs_high_after_rsbp_mask_df = pd.DataFrame(False, index=close_df.index, columns=close_df.columns)
 
 for ticker in close_df.columns:
     if ticker not in data.columns.levels[0]: continue
     df_tick = data[ticker].dropna(subset=['Close'])
     if len(df_tick) < 10: continue
-    weekly_last_dates = df_tick.reset_index().groupby(pd.Grouper(key='Date', freq='W-FRI'))['Date'].last().dropna()
     
+    if bench_close is not None:
+        tick_rs = rs_raw_df[ticker]
+        tick_high_rs = tick_rs.rolling(252, min_periods=50).max()
+        tick_high_price = high_df[ticker].rolling(252, min_periods=50).max()
+        
+        is_rs_nh = tick_rs >= tick_high_rs
+        is_p_nh = high_df[ticker] >= tick_high_price
+        
+        rsbp_series = is_rs_nh & (~is_p_nh)
+        rs_blue_series = is_rs_nh & is_p_nh
+        rs_bp_mask_df[ticker] = rsbp_series
+        
+        purple_indices = np.where(rsbp_series.values)[0]
+        blue_indices = np.where(rs_blue_series.values)[0]
+        
+        valid_after_rsbp = np.zeros(len(df_tick), dtype=bool)
+        for p_idx in purple_indices:
+            sub_blues = blue_indices[(blue_indices > p_idx) & (blue_indices <= p_idx + 15)]
+            if len(sub_blues) > 0:
+                valid_after_rsbp[sub_blues] = True
+        rs_high_after_rsbp_mask_df[ticker] = valid_after_rsbp
+
+    weekly_last_dates = df_tick.reset_index().groupby(pd.Grouper(key='Date', freq='W-FRI'))['Date'].last().dropna()
     weekly_df = df_tick.resample('W-FRI').agg({
         'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
     }).dropna()
@@ -220,15 +209,14 @@ scanner_conditions = {
     "up on volume": ((close_df.pct_change(periods=1, fill_method=None) * 100) >= 4.5) & ((vol_df / avg_vol_50) > 2),
     "hvy": (vol_df == max_vol_252) & (vol_df > 0),
     "52 week high": close_df > prev_max_close_252,
-    "Weekly Pocket Pivot": pp_mask_df
+    "Weekly Pocket Pivot": pp_mask_df,
+    "RS High after RSBP": rs_high_after_rsbp_mask_df
 }
 
 six_months_ago = pd.Timestamp.today().normalize() - pd.DateOffset(months=6)
 time_mask = close_df.index >= six_months_ago
-
 scanner_masks = {}
 all_shortlisted = set()
-
 for name, condition in scanner_conditions.items():
     combined_mask = (base_rules & condition).loc[time_mask]
     scanner_masks[name] = combined_mask
@@ -237,12 +225,7 @@ for name, condition in scanner_conditions.items():
 
 print(f"Total unique stocks passing Base Rules + ANY specific scan: {len(all_shortlisted)}")
 
-# ==========================================
-# 6. MARKET CAP CHECK & DATA FORMATTING
-# ==========================================
-print("Verifying Volume limits, Market Cap, and compiling final metrics...")
 results = {name: [] for name in scanner_conditions.keys()}
-
 adr_6m = adr_20_df.loc[time_mask]
 mcap_cache = {}
 
@@ -250,7 +233,7 @@ for ticker in all_shortlisted:
     stock_name = ticker.replace('.NS', '')
     avg_vol_crores = volume_map.get(stock_name, 0)
     
-    if avg_vol_crores < 1.0:
+    if avg_vol_crores < 5.0:  # > 5 Cr Average Rupee Volume Filter
         continue
         
     absolute_rupee_vol = avg_vol_crores * 10000000
@@ -310,8 +293,9 @@ for ticker in all_shortlisted:
                         atr_val = atr_14_df.loc[latest_date_obj, ticker]
                         dsg = (final_c - nearest_sg_top) / atr_val if pd.notna(atr_val) and atr_val != 0 and pd.notna(nearest_sg_top) else np.nan
                         
-                        latest_high = max_high_252.loc[latest_date_obj, ticker]
-                        latest_low = low_52w.loc[latest_date_obj, ticker]
+                        lookback_bars_dyn = min(252, len(c_series))
+                        latest_high = high_df[ticker].tail(lookback_bars_dyn).max()
+                        latest_low = safe_low.tail(lookback_bars_dyn).min()
                         
                         pct_above_low = ((final_c - latest_low) / latest_low) * 100 if pd.notna(latest_low) and latest_low != 0 else np.nan
                         pct_off_high = ((final_c - latest_high) / latest_high) * 100 if pd.notna(latest_high) and latest_high != 0 else np.nan
@@ -325,7 +309,6 @@ for ticker in all_shortlisted:
                             d_rs_50d = rs_out_50d_df.loc[latest_date_obj, ticker]
                         else:
                             d_rs_off_high = d_rs_dist_21 = d_rs_1w = d_rs_10d = d_rs_20d = d_rs_50d = np.nan
-
                         industry = industry_map.get(stock_name, "Unclassified")
                         
                         ms_data = ms_dict.get(stock_name, {})
@@ -353,14 +336,8 @@ for ticker in all_shortlisted:
                             round(d_rs_20d, 2) if pd.notna(d_rs_20d) else "N/A",
                             round(d_rs_50d, 2) if pd.notna(d_rs_50d) else "N/A"
                         ] + ms_row)
-
     except Exception as e:
         continue
-
-# ==========================================
-# 7. WRITE RESULTS TO TARGET SHEET
-# ==========================================
-print("\nExporting all formatted data to Unified Google Sheet...")
 
 headers = [
     "Trigger Date", "Stock Symbol", "Industry Group", "Avg Rupee Vol (Cr)", "ADR %",
@@ -378,7 +355,6 @@ def get_column_letter(col_idx):
     return col_str
 
 dynamic_col_letter = get_column_letter(len(headers))
-
 for tab_name, matched_stocks in results.items():
     try:
         worksheet = target_ss.worksheet(tab_name)
@@ -390,7 +366,6 @@ for tab_name, matched_stocks in results.items():
     sheet_output = [headers] + matched_stocks
     
     if len(sheet_output) > 1:
-        # 🟢 BULLETPROOF JSON FIREWALL: Removes any hidden NaN or Infinity
         safe_data = []
         for row in sheet_output:
             clean_row = []
@@ -402,7 +377,6 @@ for tab_name, matched_stocks in results.items():
                 else:
                     clean_row.append(val)
             safe_data.append(clean_row)
-
         worksheet.update(values=safe_data, range_name='A1', value_input_option='USER_ENTERED')
         worksheet.freeze(rows=1)
         worksheet.format(f'A1:{dynamic_col_letter}1', {
@@ -414,5 +388,3 @@ for tab_name, matched_stocks in results.items():
     else:
         worksheet.update(values=[["No stocks met criteria."]], range_name='A1', value_input_option='USER_ENTERED')
         print(f" -> '{tab_name}' tab updated (0 matches).")
-
-print("\nMaster Scanner Complete! All tabs updated in the Dashboard Sheet.")
