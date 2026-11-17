@@ -1,7 +1,7 @@
 name: Alpha Dashboard Daily Run
 
 on:
-  workflow_dispatch: 
+  workflow_dispatch:
     inputs:
       session:
         description: 'Morning or Afternoon run?'
@@ -20,6 +20,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
 
       - name: Install required libraries
         run: pip install yfinance gspread google-auth pandas numpy matplotlib
@@ -30,7 +31,7 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: python main.py
 
-      - name: 2. Run ETF Database Engine (Both Morning and Afternoon)
+      - name: 2. Run ETF Database & Industry Ranks Engine (Both Morning and Afternoon)
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: python etf_database_updater.py
@@ -40,9 +41,3 @@ jobs:
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: python master_scanner.py
-
-      - name: 4. Run Watchlist Builder (AFTERNOON ONLY)
-        if: github.event.inputs.session == 'afternoon'
-        env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-        run: python watchlist_builder.py
