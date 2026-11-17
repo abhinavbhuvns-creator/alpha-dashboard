@@ -24,6 +24,28 @@ HEADERS = [
     "PDF Link", "Model Tier"
 ]
 
+# Global NSE Session for downloading PDFs from nsearchives.nseindia.com without 403 Forbidden
+NSE_SESSION = None
+
+def get_nse_session():
+    global NSE_SESSION
+    if NSE_SESSION is None:
+        NSE_SESSION = requests.Session()
+        NSE_SESSION.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,application/pdf,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.nseindia.com/companies-listing/corporate-filings-announcements',
+            'Connection': 'keep-alive'
+        })
+        try:
+            NSE_SESSION.get("https://www.nseindia.com", timeout=15)
+            time.sleep(1)
+            NSE_SESSION.get("https://www.nseindia.com/companies-listing/corporate-filings-announcements", timeout=15)
+        except Exception:
+            pass
+    return NSE_SESSION
+
 def parse_flexible_date(date_str):
     """Parses various date formats into a datetime object."""
     if not date_str:
@@ -46,9 +68,21 @@ def parse_flexible_date(date_str):
     return None
 
 def download_and_extract_pdf(pdf_url):
-    """Downloads the financial result PDF and extracts text with a strict 25s timeout."""
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    response = requests.get(pdf_url, headers=headers, timeout=25)
+    """Downloads the financial result PDF using an authenticated NSE cookie session and extracts text."""
+    global NSE_SESSION
+    clean_url = pdf_url.strip().replace(" ", "%20")
+    
+    response = None
+    for attempt in range(3):
+        session = get_nse_session()
+        response = session.get(clean_url, timeout=30)
+        if response.status_code == 200:
+            break
+        if response.status_code in [401, 403]:
+            print(f"      🔄 NSE {response.status_code} on PDF download. Refreshing cookies (Attempt {attempt+1}/3)...", flush=True)
+            NSE_SESSION = None
+            time.sleep(2)
+            
     response.raise_for_status()
     
     temp_file = "temp_result.pdf"
@@ -76,7 +110,6 @@ def call_gemini_with_fallback(prompt, model_list, api_key, exhausted_set, timeou
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"responseMimeType": "application/json"}
     }
-
     last_error = None
     for model_name in model_list:
         if model_name in exhausted_set:
@@ -111,7 +144,6 @@ def call_gemini_with_fallback(prompt, model_list, api_key, exhausted_set, timeou
                 
             last_error = f"API Error ({response.status_code}) on {model_name}: {response.text}"
             break
-
     raise Exception(last_error or "All models in chain exhausted or failed.")
 
 def fmt_pct(val):
@@ -122,7 +154,7 @@ def fmt_pct(val):
     try:
         num = round(float(s))
         return f"{num}%"
-    except:
+    except Exception:
         return str(val).strip()
 
 def fmt_num(val):
@@ -135,7 +167,7 @@ def fmt_num(val):
         if abs(f) >= 100:
             return str(round(f))
         return str(round(f, 1)).rstrip('0').rstrip('.') if '.' in str(round(f, 1)) else str(round(f, 1))
-    except:
+    except Exception:
         return str(val).strip()
 
 def run_scout_and_mixed_pass(transcript_text, company_name, api_key, exhausted_lite):
@@ -149,16 +181,13 @@ def run_scout_and_mixed_pass(transcript_text, company_name, api_key, exhausted_l
     Always prioritize CONSOLIDATED numbers over Standalone numbers (use Standalone only if Consolidated is not reported).
     Convert absolute Revenue, Operating Profit, and PAT figures into Crores (Cr) if reported in Lakhs or Millions (1 Crore = 100 Lakhs = 10 Million).
     If YoY % or QoQ % is not explicitly printed, calculate it from the absolute quarterly numbers and round to the NEAREST INTEGER.
-
     Classify the main verdict into EXACTLY ONE of these 4 tags:
     - "Excellent": Strong double-digit YoY revenue & PAT/EPS growth (e.g., >15-20% YoY) OR massive operating profit & margin expansion.
     - "Good": Solid positive YoY growth in revenue and profit (e.g., >8-15% YoY) with stable or improving margins.
     - "Mixed": Conflicting numbers (e.g., Revenue growing well but PAT/margins declining, or strong YoY but weak QoQ).
     - "Weak": Declining revenue and declining profits/margins, or widening losses.
-
     Separately evaluate the "Turnaround" add-on tag ("Yes" or "No"):
     - Set "turnaround" to "Yes" ONLY if the company swung from a Net Loss (negative PAT/EPS) in the prior YoY or QoQ period to a Net Profit (positive PAT/EPS) in the current quarter, OR staged a dramatic recovery from severe multi-quarter contraction. Otherwise set to "No".
-
     Return strictly a JSON object matching this schema:
     {{
         "verdict": "Excellent, Good, Mixed, or Weak",
@@ -172,7 +201,6 @@ def run_scout_and_mixed_pass(transcript_text, company_name, api_key, exhausted_l
         "eps_yoy_pct": "nearest integer % e.g. 82%",
         "eps_qoq_pct": "nearest integer % e.g. 38%"
     }}
-
     Financial Filing Text:
     {transcript_text[:45000]}
     """
@@ -200,7 +228,6 @@ def run_premium_financial_extraction(transcript_text, company_name, verdict, tur
     2. Express Revenue, Operating Profit (EBITDA / EBIT before exceptional items), and PAT (Net Profit after tax) in Indian Crores (Cr), rounded to the nearest integer or 1 decimal place (1 Crore = 100 Lakhs = 10 Million).
     3. Express EPS in Rupees (₹) up to 1 decimal place.
     4. If YoY %, QoQ %, or OPM % (Operating Profit / Revenue * 100) are not explicitly stated, calculate them mathematically from the quarterly numbers and round ALL percentages to the NEAREST INTEGER (e.g., "19%", "-59%", "331%").
-
     Return strictly a JSON object matching this exact schema:
     {{
         "result_type": "Consolidated or Standalone",
@@ -231,7 +258,6 @@ def run_premium_financial_extraction(transcript_text, company_name, verdict, tur
         "eps_prev": "EPS in Rs, e.g. 10.0",
         "eps_yoy": "EPS in Rs, e.g. 7.6"
     }}
-
     Financial Filing Text:
     {transcript_text[:120000]}
     """
@@ -309,7 +335,7 @@ def main():
                         val_str = str(v).replace(',', '').replace('Cr', '').replace('₹', '').strip()
                         val = float(val_str)
                         break
-                    except:
+                    except Exception:
                         pass
             if 0 < val < 100000:
                 val = val * 10000000
@@ -354,10 +380,8 @@ def main():
     print("Reading Corporate_Announcements for Financial Results...", flush=True)
     corp_ws = spreadsheet.worksheet("Corporate_Announcements")
     corp_data = corp_ws.get_all_records()
-
     exhausted_lite = set()
     exhausted_premium = set()
-
     noise_phrases = [
         "audio recording", "video recording", "link of audio", "newspaper",
         "intimation of board meeting", "prior intimation", "trading window",
@@ -375,16 +399,13 @@ def main():
 
         is_fin_result = (category == "financial results") or ("financial results" in announcement and "submitted to the exchange" in announcement)
         is_noise = any(np in announcement for np in noise_phrases)
-
         if not (is_fin_result and not is_noise and pdf_link and pdf_link.endswith(".pdf") and pdf_link not in processed_pdfs):
             continue
 
-        # 1-Year Date Check
         filing_date = parse_flexible_date(date_str)
         if filing_date and filing_date < one_year_cutoff:
             continue
 
-        # > 5 Crore Average Rupee Turnover Filter
         turnover = liquidity_map.get(symbol, 0)
         if liquidity_map and turnover < 50000000:
             print(f" -> Skipping {symbol}: Turnover < 5 Cr", flush=True)
@@ -410,7 +431,6 @@ def main():
             print(f"    [Scout: {lite_model_used}] Verdict: {verdict}{t_badge}", flush=True)
             time.sleep(2)
 
-            # Case 1: WEAK -> Stamp Weak and skip extraction
             if verdict == "Weak":
                 weak_row = build_full_row(date_str, symbol, company, industry, "Weak", turnaround, {"result_type": scout_data.get("result_type", "Consolidated")}, pdf_link, "Skip")
                 results_ws.append_row(weak_row)
@@ -419,7 +439,6 @@ def main():
                 print(f"    ✅ Stamped WEAK for {symbol} (Skipped deep extraction).", flush=True)
                 continue
 
-            # Case 2: MIXED -> Save Sales & EPS YoY/QoQ % written by Lite model
             if verdict == "Mixed":
                 mixed_row = build_full_row(date_str, symbol, company, industry, "Mixed", turnaround, scout_data, pdf_link, "Lite")
                 results_ws.append_row(mixed_row)
@@ -428,7 +447,6 @@ def main():
                 print(f"    ✅ Saved MIXED summary (Sales & EPS %) for {symbol}.", flush=True)
                 continue
 
-            # Case 3: EXCELLENT or GOOD -> Extract Full Matrix with 3.6-Flash (or 2.5-Flash fallback)
             if len(exhausted_premium) < len(PREMIUM_MODELS):
                 try:
                     prem_data, prem_model_used = run_premium_financial_extraction(text, company, verdict, turnaround, api_key, exhausted_premium)
@@ -445,24 +463,21 @@ def main():
                     kept_rows.append(backlog_row)
                     processed_pdfs.add(pdf_link)
             else:
-                # Both 3.6-Flash and 2.5-Flash exhausted -> Save as Backlog so it upgrades tomorrow
                 backlog_row = build_full_row(date_str, symbol, company, industry, verdict, turnaround, scout_data, pdf_link, "Backlog")
                 results_ws.append_row(backlog_row)
                 kept_rows.append(backlog_row)
                 processed_pdfs.add(pdf_link)
                 print(f"    📌 Queued {symbol} ({verdict}{t_badge}) in Backlog for tomorrow's Premium quota.", flush=True)
-
         except requests.exceptions.Timeout:
             print(f"⚠️ Timeout processing {symbol}. Will retry next run.", flush=True)
         except Exception as e:
             print(f"⚠️ Error processing {symbol}: {e}", flush=True)
 
-    # 4. Self-Healing Backlog Queue: Upgrade 'Backlog' rows (Excellent -> Good) when Premium quota is available
+    # 4. Self-Healing Backlog Queue
     if len(exhausted_premium) < len(PREMIUM_MODELS):
         print("\nChecking Financial Results Backlog Queue (Excellent -> Good)...", flush=True)
         prio_map = {"excellent": 0, "good": 1}
         backlog_candidates = []
-
         for idx in range(1, len(kept_rows)):
             r = kept_rows[idx]
             tier = str(r[34]).strip().lower() if len(r) > 34 else ""
@@ -472,7 +487,6 @@ def main():
                 backlog_candidates.append((prio_map[verd], -dt.timestamp(), idx, r))
 
         backlog_candidates.sort(key=lambda x: (x[0], x[1]))
-
         if not backlog_candidates:
             print(" -> No pending Backlog rows. All Excellent & Good results are fully extracted!", flush=True)
         else:
