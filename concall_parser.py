@@ -19,6 +19,28 @@ HEADERS = [
     "Margins", "Risks", "Other", "PDF Link", "Model Tier"
 ]
 
+# Global NSE Session for downloading PDFs from nsearchives.nseindia.com without 403 Forbidden
+NSE_SESSION = None
+
+def get_nse_session():
+    global NSE_SESSION
+    if NSE_SESSION is None:
+        NSE_SESSION = requests.Session()
+        NSE_SESSION.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,application/pdf,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.nseindia.com/companies-listing/corporate-filings-announcements',
+            'Connection': 'keep-alive'
+        })
+        try:
+            NSE_SESSION.get("https://www.nseindia.com", timeout=15)
+            time.sleep(1)
+            NSE_SESSION.get("https://www.nseindia.com/companies-listing/corporate-filings-announcements", timeout=15)
+        except Exception:
+            pass
+    return NSE_SESSION
+
 def parse_flexible_date(date_str):
     """Parses various date formats into a datetime object."""
     if not date_str:
@@ -41,9 +63,21 @@ def parse_flexible_date(date_str):
     return None
 
 def download_and_extract_pdf(pdf_url):
-    """Downloads the transcript PDF and extracts all text with a strict 25s timeout."""
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    response = requests.get(pdf_url, headers=headers, timeout=25)
+    """Downloads the transcript PDF using an authenticated NSE cookie session and extracts text."""
+    global NSE_SESSION
+    clean_url = pdf_url.strip().replace(" ", "%20")
+    
+    response = None
+    for attempt in range(3):
+        session = get_nse_session()
+        response = session.get(clean_url, timeout=30)
+        if response.status_code == 200:
+            break
+        if response.status_code in [401, 403]:
+            print(f"      🔄 NSE {response.status_code} on PDF download. Refreshing cookies (Attempt {attempt+1}/3)...", flush=True)
+            NSE_SESSION = None
+            time.sleep(2)
+            
     response.raise_for_status()
     
     temp_path = "temp_transcript.pdf"
@@ -73,7 +107,6 @@ def call_gemini_with_cooldown(prompt, model_list, api_key, exhausted_set, timeou
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"responseMimeType": "application/json"}
     }
-
     last_error = None
     for model_name in model_list:
         if model_name in exhausted_set:
@@ -82,7 +115,6 @@ def call_gemini_with_cooldown(prompt, model_list, api_key, exhausted_set, timeou
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
         tried_rpm_cooldown = False
         tried_503_retry = False
-
         while True:
             response = requests.post(url, headers=headers, json=payload, timeout=timeout)
             
@@ -90,14 +122,12 @@ def call_gemini_with_cooldown(prompt, model_list, api_key, exhausted_set, timeou
                 result_data = response.json()
                 raw_json_text = result_data['candidates'][0]['content']['parts'][0]['text']
                 return json.loads(raw_json_text), model_name
-
             # 1. Handle 503 Temporary Server Overload
             if response.status_code == 503 and not tried_503_retry:
                 tried_503_retry = True
                 print(f"      ⏳ 503 High Demand on {model_name}. Waiting 15s to retry...", flush=True)
                 time.sleep(15)
                 continue
-
             # 2. Handle 429 (Distinguish 1-Minute Speed Limit vs. Daily Quota Limit)
             if is_quota_error(response.status_code, response.text):
                 if not tried_rpm_cooldown:
@@ -110,19 +140,16 @@ def call_gemini_with_cooldown(prompt, model_list, api_key, exhausted_set, timeou
                     exhausted_set.add(model_name)
                     last_error = f"429 Daily Quota Exhausted on {model_name}"
                     break
-
             # 3. Handle 404 Model Endpoint Unavailable
             if response.status_code == 404:
                 print(f"      ℹ️ Endpoint {model_name} unavailable (404). Switching to fallback model...", flush=True)
                 exhausted_set.add(model_name)
                 last_error = f"404 Not Found on {model_name}"
                 break
-
             # Any other error (503 after retry, 500, etc.) -> try next model in chain without permanently banning this model
             last_error = f"API Failed ({response.status_code}) on {model_name}: {response.text}"
             print(f"      ⚠️ {model_name} returned {response.status_code}. Trying next fallback model...", flush=True)
             break
-
     raise Exception(last_error or "All models in pool exhausted or temporarily unavailable.")
 
 def run_scout_and_lite_summary(transcript_text, company_name, api_key, exhausted_lite):
@@ -248,7 +275,7 @@ def main():
                         val_str = str(v).replace(',', '').replace('Cr', '').replace('₹', '').strip()
                         val = float(val_str)
                         break
-                    except:
+                    except Exception:
                         pass
             if 0 < val < 100000:
                 val = val * 10000000
@@ -256,7 +283,7 @@ def main():
     except Exception as e:
         print(f"⚠️ Warning: Could not load Avg_Rupee_Volume_Master: {e}", flush=True)
 
-    # 2. Load Existing Concall_Analysis & Perform 1-Year Rolling Purge (Preserves all valid history)
+    # 2. Load Existing Concall_Analysis & Perform 1-Year Rolling Purge
     print("Reading existing Concall_Analysis & purging records older than 1 year...", flush=True)
     try:
         analysis_ws = spreadsheet.worksheet("Concall_Analysis")
@@ -299,11 +326,10 @@ def main():
     print("Reading Corporate_Announcements...", flush=True)
     corp_ws = spreadsheet.worksheet("Corporate_Announcements")
     corp_data = corp_ws.get_all_records()
-
     exhausted_lite = set()
     exhausted_premium = set()
-
     print("Scanning for new Earnings Call Transcripts...", flush=True)
+
     for row in corp_data:
         announcement = str(row.get("Announcement", "")).lower()
         pdf_link = str(row.get("PDF Link", "")).strip()
@@ -352,7 +378,6 @@ def main():
                     print(f"    ✅ Saved PREMIUM ({prem_model_used}) analysis for {symbol}", flush=True)
                     time.sleep(4)
                 except Exception as pe:
-                    # Catch ALL Premium errors (429, 503, timeouts) and save the Lite summary so the stock is never lost
                     print(f"    ⚠️ Premium extraction paused ({pe}). Saving Lite summary for {symbol} to upgrade in Backlog!", flush=True)
                     lite_row = build_row_from_lite(date_str, symbol, company, verdict, lite_summary, pdf_link)
                     analysis_ws.append_row(lite_row)
@@ -364,19 +389,16 @@ def main():
                 kept_rows.append(lite_row)
                 processed_pdfs.add(pdf_link)
                 print(f"    ✅ Saved LITE summary for {symbol} ({verdict})", flush=True)
-
         except requests.exceptions.Timeout:
             print(f"⚠️ Timeout downloading PDF for {symbol}. Will retry next run.", flush=True)
         except Exception as e:
             print(f"⚠️ Error processing {symbol}: {e}", flush=True)
 
     # 4. Backlog & Idle Upgrade Protocol: Upgrade 'Lite' Rows to 'Premium'
-    # Strict Priority Order: Confident (Backlog) -> Steady -> Mixed -> Weak
     if len(exhausted_premium) < len(PREMIUM_MODELS):
         print("\nChecking Backlog & Idle Upgrade Queue (Confident -> Steady -> Mixed -> Weak)...", flush=True)
         priority_map = {"confident": 0, "steady": 1, "mixed": 2, "weak": 3}
         upgrade_candidates = []
-
         for sheet_row_idx in range(1, len(kept_rows)):
             r = kept_rows[sheet_row_idx]
             tier = str(r[13]).strip().lower() if len(r) > 13 else "lite"
@@ -390,7 +412,6 @@ def main():
                 upgrade_candidates.append((prio, -dt.timestamp(), sheet_row_idx, r))
 
         upgrade_candidates.sort(key=lambda x: (x[0], x[1]))
-
         if not upgrade_candidates:
             print(" -> No Lite rows waiting for Premium upgrade. Database is 100% Premium!", flush=True)
         else:
@@ -399,7 +420,6 @@ def main():
                 if len(exhausted_premium) >= len(PREMIUM_MODELS):
                     print("🛑 All Premium Concall models exhausted during upgrades. Stopping cleanly for today!", flush=True)
                     break
-
                 date_str, symbol, company, verdict, _, _, _, _, _, _, _, _, pdf_link, _ = r
                 sheet_line_number = sheet_row_idx + 1
                 
