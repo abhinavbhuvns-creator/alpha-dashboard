@@ -182,11 +182,14 @@ for ticker in breakout_candidates:
 df_stocks = pd.DataFrame.from_dict(stock_base_metrics, orient='index')
 
 # ==========================================
-# 6. MODERN INDUSTRY ETF RETURNS & INDUSTRY RANKS (> 5 CR UNIVERSE)
+# 6. MODERN INDUSTRY ETF RETURNS & INDUSTRY RANKS
+#    (Bayesian Shrinkage k=4 + Smoothed Breadth + Flat-Base Emerging Score)
 # ==========================================
-print("\nRolling up >5 Cr stocks into ETF Groups, Industry Ranks, and Top 2 Weekly/Monthly Leaders...", flush=True)
+print("\nRolling up >5 Cr stocks into ETF Groups, Bayesian Industry Ranks, and Top 2 Weekly/Monthly Leaders...", flush=True)
 etf_results = []
 rank_rows = []
+
+mkt = {k: (df_stocks[k].mean() if not df_stocks[k].dropna().empty else 0.0) for k in ['1w', '1m', '3m', '6m', 'prev_2m']}
 
 for industry, stocks in industry_map.items():
     valid_group_tickers = [t for t in stocks if t in df_stocks.index]
@@ -201,25 +204,27 @@ for industry, stocks in industry_map.items():
     top1_1m = f"{sorted_1m.index[0].replace('.NS', '')} ({sorted_1m.iloc[0]*100:+.1f}%)" if len(sorted_1m) > 0 else ""
     top2_1m = f"{sorted_1m.index[1].replace('.NS', '')} ({sorted_1m.iloc[1]*100:+.1f}%)" if len(sorted_1m) > 1 else ""
 
-    # Modern Outlier-Resistant Blended Return (50% Mean + 50% Median) so a single stock spike doesn't distort a 2-stock group
-    ret_1w_grp = 0.5 * ind_data['1w'].mean() + 0.5 * ind_data['1w'].median() if not ind_data['1w'].dropna().empty else 0.0
-    ret_1m_grp = 0.5 * ind_data['1m'].mean() + 0.5 * ind_data['1m'].median() if not ind_data['1m'].dropna().empty else 0.0
-    ret_3m_grp = 0.5 * ind_data['3m'].mean() + 0.5 * ind_data['3m'].median() if not ind_data['3m'].dropna().empty else 0.0
-    ret_6m_grp = 0.5 * ind_data['6m'].mean() + 0.5 * ind_data['6m'].median() if not ind_data['6m'].dropna().empty else 0.0
-    prev_2m_grp = ind_data['prev_2m'].mean() if not ind_data['prev_2m'].dropna().empty else 0.0
+    # Bayesian Shrinkage (k=4) + 50/50 Mean-Median Blend
+    n = len(valid_group_tickers)
+    w = n / (n + 4.0)
+    shrink = lambda col: w * (0.5 * ind_data[col].mean() + 0.5 * ind_data[col].median()) + (1.0 - w) * mkt[col] if not ind_data[col].dropna().empty else mkt[col]
 
-    # Breadth-adjusted composite score
-    pct_pos_1m = (ind_data['1m'] > 0).mean() if len(ind_data) > 0 else 0.0
+    ret_1w_grp, ret_1m_grp, ret_3m_grp, ret_6m_grp, prev_2m_grp = shrink('1w'), shrink('1m'), shrink('3m'), shrink('6m'), shrink('prev_2m')
+
+    # Laplace-Smoothed Breadth (prevents 100%/0% distortion on 1-2 stock groups)
+    pct_pos_1m = ((ind_data['1m'] > 0).sum() + 1.5) / (n + 3.0)
+
+    # Composite & Flat-Base Emerging Scores
     composite_score = (ret_1w_grp * 0.25) + (ret_1m_grp * 0.35) + (ret_3m_grp * 0.25) + (ret_6m_grp * 0.15) + (pct_pos_1m * 0.02)
-    emerging_score = (ret_1m_grp * 0.50) + (ret_1w_grp * 0.30) - (prev_2m_grp * 0.20)
+    emerging_score = (ret_1m_grp * 0.50) + (ret_1w_grp * 0.30) - (abs(prev_2m_grp) * 0.20)
 
     etf_results.append({
         'Industry Name': industry,
-        'Stocks (>5Cr)': len(valid_group_tickers),
+        'Stocks (>5Cr)': n,
         '1 Day Return': ind_data['1d'].mean(),
         '1 Week Return': ind_data['1w'].mean(),
         '1 Month Return': ind_data['1m'].mean(),
-        'Prev 2M Return': prev_2m_grp,
+        'Prev 2M Return': ind_data['prev_2m'].mean(),
         '3 Month Return': ind_data['3m'].mean(),
         '6 Month Return': ind_data['6m'].mean(),
         '% Distance from 21 EMA': ind_data['pct_dist_ema'].mean(),
@@ -234,7 +239,7 @@ for industry, stocks in industry_map.items():
 
     rank_rows.append({
         'Industry Name': industry,
-        'Stocks (>5Cr)': len(valid_group_tickers),
+        'Stocks (>5Cr)': n,
         '_score': composite_score,
         '_emerging': emerging_score,
         '_1w': ret_1w_grp,
@@ -325,4 +330,4 @@ if not df_ranks.empty:
     rank_sheet.freeze(rows=1)
     rank_sheet.format('A1:L1', {'textFormat': {'bold': True, 'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}}, 'backgroundColor': {'red': 0.1, 'green': 0.45, 'blue': 0.91}})
 
-print("✅ Success! ETF Returns, Stock Database (>5Cr), and Modern Industry Ranks fully updated.", flush=True)
+print("✅ Success! ETF Returns, Stock Database (>5Cr), and Bayesian Industry Ranks fully updated.", flush=True)
