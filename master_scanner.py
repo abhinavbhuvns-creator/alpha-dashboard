@@ -171,6 +171,14 @@ tr_df = pd.DataFrame(np.maximum(tr1.values, np.maximum(tr2.values, tr3.values)),
 atr_14_df = tr_df.rolling(window=14, min_periods=1).mean().replace(0, np.nan)
 
 weekly_close_df = close_df.resample('W-FRI').last()
+weekly_high_df = high_df.resample('W-FRI').max()
+weekly_low_df = low_df.resample('W-FRI').min()
+w_tr1 = weekly_high_df - weekly_low_df
+w_tr2 = (weekly_high_df - weekly_close_df.shift(1)).abs()
+w_tr3 = (weekly_low_df - weekly_close_df.shift(1)).abs()
+w_tr_df = pd.DataFrame(np.maximum(w_tr1.values, np.maximum(w_tr2.values, w_tr3.values)), index=weekly_close_df.index, columns=weekly_close_df.columns)
+w_atr_14_df = w_tr_df.rolling(window=14, min_periods=1).mean().replace(0, np.nan).reindex(close_df.index, method='ffill')
+
 daily_sma_4_df = weekly_close_df.rolling(4, min_periods=1).mean().reindex(close_df.index, method='ffill')
 daily_sma_10_df = weekly_close_df.rolling(10, min_periods=1).mean().reindex(close_df.index, method='ffill')
 
@@ -325,7 +333,7 @@ for ticker in all_shortlisted:
                     dw4 = dist_w4_df.loc[latest_date_obj, ticker]
                     dw10 = dist_w10_df.loc[latest_date_obj, ticker]
 
-                    # Daily Support Gap (ATR)
+                    # Daily Support Gap (Daily 14-ATR)
                     c_series = close_df.loc[:latest_date_obj, ticker].dropna().values
                     l_series = low_df.loc[:latest_date_obj, ticker].dropna().values
 
@@ -358,7 +366,7 @@ for ticker in all_shortlisted:
                     atr_val = atr_14_df.loc[latest_date_obj, ticker]
                     dsg = (final_c - nearest_sg_top) / atr_val if pd.notna(atr_val) and atr_val != 0 and pd.notna(nearest_sg_top) else np.nan
 
-                    # Weekly Support Gap (ATR)
+                    # Weekly Support Gap (Weekly 14-ATR)
                     wc_series = close_df.loc[:latest_date_obj, ticker].resample('W-FRI').last().dropna().values
                     wl_series = low_df.loc[:latest_date_obj, ticker].resample('W-FRI').min().dropna().values
                     w_len = min(len(wc_series), len(wl_series))
@@ -383,7 +391,8 @@ for ticker in all_shortlisted:
                             if 0 <= diff < min_diff:
                                 min_diff = diff
                                 nearest_wsg_top = gap[0]
-                    dwsg = (final_c - nearest_wsg_top) / atr_val if pd.notna(atr_val) and atr_val != 0 and pd.notna(nearest_wsg_top) else np.nan
+                    w_atr_val = w_atr_14_df.loc[latest_date_obj, ticker]
+                    dwsg = (final_c - nearest_wsg_top) / w_atr_val if pd.notna(w_atr_val) and w_atr_val != 0 and pd.notna(nearest_wsg_top) else np.nan
 
                     # Proper single-ticker IPO-aware ATH/ATL slice up to latest_date_obj
                     lookback_bars_dyn = min(252, len(c_series))
