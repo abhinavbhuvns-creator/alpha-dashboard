@@ -278,7 +278,7 @@ for name, condition in scanner_conditions.items():
 print(f"Total unique stocks passing Base Rules + ANY specific scan: {len(all_shortlisted)}", flush=True)
 
 # ==========================================
-# 6. MARKET CAP CHECK & DATA FORMATTING
+# 6. MARKET CAP CHECK (FAST_INFO + FALLBACK) & DATA FORMATTING
 # ==========================================
 print("Verifying Volume limits, Market Cap, and compiling final metrics...", flush=True)
 results = {name: [] for name in scanner_conditions.keys()}
@@ -296,11 +296,17 @@ for ticker in all_shortlisted:
 
     try:
         if ticker not in mcap_cache:
-            mcap_cache[ticker] = yf.Ticker(ticker).info.get('marketCap', 0)
+            try:
+                fi = yf.Ticker(ticker).fast_info
+                mcap_cache[ticker] = getattr(fi, 'market_cap', 0) or 0
+            except Exception:
+                mcap_cache[ticker] = 0
 
         market_cap = mcap_cache[ticker]
+        # Pass if Market Cap check succeeds (>= 0.25% turnover) OR if Yahoo blocks lookup (fallback to >= 5 Cr volume)
+        passes_mcap = (market_cap > 0 and (absolute_rupee_vol / market_cap) >= 0.0025) or (market_cap == 0 and avg_vol_crores >= 5.0)
 
-        if market_cap > 0:
+        if passes_mcap:
             for scan_name, mask in scanner_masks.items():
                 # Strict > 5 Crore filter for RS High after RSBP
                 if scan_name == "RS High after RSBP" and avg_vol_crores < 5.0:
@@ -308,127 +314,124 @@ for ticker in all_shortlisted:
 
                 if ticker in mask.columns and mask[ticker].any():
                     valid_dates = mask[ticker][mask[ticker]].index
-                    ratio = absolute_rupee_vol / market_cap
+                    latest_date_obj = valid_dates.max()
+                    latest_date_str = latest_date_obj.strftime('%Y-%m-%d')
 
-                    if ratio >= 0.0025:
-                        latest_date_obj = valid_dates.max()
-                        latest_date_str = latest_date_obj.strftime('%Y-%m-%d')
+                    trigger_adr = adr_6m.loc[latest_date_obj, ticker]
 
-                        trigger_adr = adr_6m.loc[latest_date_obj, ticker]
+                    d9 = dist_9_df.loc[latest_date_obj, ticker]
+                    d21 = dist_21_df.loc[latest_date_obj, ticker]
+                    d50 = dist_50_df.loc[latest_date_obj, ticker]
+                    dw4 = dist_w4_df.loc[latest_date_obj, ticker]
+                    dw10 = dist_w10_df.loc[latest_date_obj, ticker]
 
-                        d9 = dist_9_df.loc[latest_date_obj, ticker]
-                        d21 = dist_21_df.loc[latest_date_obj, ticker]
-                        d50 = dist_50_df.loc[latest_date_obj, ticker]
-                        dw4 = dist_w4_df.loc[latest_date_obj, ticker]
-                        dw10 = dist_w10_df.loc[latest_date_obj, ticker]
+                    # Daily Support Gap (ATR)
+                    c_series = close_df.loc[:latest_date_obj, ticker].dropna().values
+                    l_series = low_df.loc[:latest_date_obj, ticker].dropna().values
 
-                        # Daily Support Gap (ATR)
-                        c_series = close_df.loc[:latest_date_obj, ticker].dropna().values
-                        l_series = low_df.loc[:latest_date_obj, ticker].dropna().values
+                    active_gaps = []
+                    for j in range(1, len(c_series)):
+                        prev_c = c_series[j - 1]
+                        curr_l = l_series[j]
+                        curr_c = c_series[j]
+                        if curr_l > prev_c:
+                            active_gaps.append([curr_l, prev_c])
+                        for k in range(len(active_gaps) - 1, -1, -1):
+                            if curr_c < active_gaps[k][0]:
+                                if curr_c <= active_gaps[k][1]:
+                                    active_gaps.pop(k)
+                                else:
+                                    active_gaps[k][0] = curr_c
+                        if len(active_gaps) > 20:
+                            active_gaps.pop(0)
 
-                        active_gaps = []
-                        for j in range(1, len(c_series)):
-                            prev_c = c_series[j - 1]
-                            curr_l = l_series[j]
-                            curr_c = c_series[j]
-                            if curr_l > prev_c:
-                                active_gaps.append([curr_l, prev_c])
-                            for k in range(len(active_gaps) - 1, -1, -1):
-                                if curr_c < active_gaps[k][0]:
-                                    if curr_c <= active_gaps[k][1]:
-                                        active_gaps.pop(k)
-                                    else:
-                                        active_gaps[k][0] = curr_c
-                            if len(active_gaps) > 20:
-                                active_gaps.pop(0)
+                    nearest_sg_top = np.nan
+                    final_c = c_series[-1]
+                    if active_gaps:
+                        min_diff = float('inf')
+                        for gap in active_gaps:
+                            diff = final_c - gap[0]
+                            if 0 <= diff < min_diff:
+                                min_diff = diff
+                                nearest_sg_top = gap[0]
 
-                        nearest_sg_top = np.nan
-                        final_c = c_series[-1]
-                        if active_gaps:
-                            min_diff = float('inf')
-                            for gap in active_gaps:
-                                diff = final_c - gap[0]
-                                if 0 <= diff < min_diff:
-                                    min_diff = diff
-                                    nearest_sg_top = gap[0]
+                    atr_val = atr_14_df.loc[latest_date_obj, ticker]
+                    dsg = (final_c - nearest_sg_top) / atr_val if pd.notna(atr_val) and atr_val != 0 and pd.notna(nearest_sg_top) else np.nan
 
-                        atr_val = atr_14_df.loc[latest_date_obj, ticker]
-                        dsg = (final_c - nearest_sg_top) / atr_val if pd.notna(atr_val) and atr_val != 0 and pd.notna(nearest_sg_top) else np.nan
+                    # Weekly Support Gap (ATR)
+                    wc_series = close_df.loc[:latest_date_obj, ticker].resample('W-FRI').last().dropna().values
+                    wl_series = low_df.loc[:latest_date_obj, ticker].resample('W-FRI').min().dropna().values
+                    w_len = min(len(wc_series), len(wl_series))
+                    w_active_gaps = []
+                    for j in range(1, w_len):
+                        if wl_series[j] > wc_series[j - 1]:
+                            w_active_gaps.append([wl_series[j], wc_series[j - 1]])
+                        for k in range(len(w_active_gaps) - 1, -1, -1):
+                            if wc_series[j] < w_active_gaps[k][0]:
+                                if wc_series[j] <= w_active_gaps[k][1]:
+                                    w_active_gaps.pop(k)
+                                else:
+                                    w_active_gaps[k][0] = wc_series[j]
+                        if len(w_active_gaps) > 20:
+                            w_active_gaps.pop(0)
 
-                        # Weekly Support Gap (ATR)
-                        wc_series = close_df.loc[:latest_date_obj, ticker].resample('W-FRI').last().dropna().values
-                        wl_series = low_df.loc[:latest_date_obj, ticker].resample('W-FRI').min().dropna().values
-                        w_len = min(len(wc_series), len(wl_series))
-                        w_active_gaps = []
-                        for j in range(1, w_len):
-                            if wl_series[j] > wc_series[j - 1]:
-                                w_active_gaps.append([wl_series[j], wc_series[j - 1]])
-                            for k in range(len(w_active_gaps) - 1, -1, -1):
-                                if wc_series[j] < w_active_gaps[k][0]:
-                                    if wc_series[j] <= w_active_gaps[k][1]:
-                                        w_active_gaps.pop(k)
-                                    else:
-                                        w_active_gaps[k][0] = wc_series[j]
-                            if len(w_active_gaps) > 20:
-                                w_active_gaps.pop(0)
+                    nearest_wsg_top = np.nan
+                    if w_active_gaps:
+                        min_diff = float('inf')
+                        for gap in w_active_gaps:
+                            diff = final_c - gap[0]
+                            if 0 <= diff < min_diff:
+                                min_diff = diff
+                                nearest_wsg_top = gap[0]
+                    dwsg = (final_c - nearest_wsg_top) / atr_val if pd.notna(atr_val) and atr_val != 0 and pd.notna(nearest_wsg_top) else np.nan
 
-                        nearest_wsg_top = np.nan
-                        if w_active_gaps:
-                            min_diff = float('inf')
-                            for gap in w_active_gaps:
-                                diff = final_c - gap[0]
-                                if 0 <= diff < min_diff:
-                                    min_diff = diff
-                                    nearest_wsg_top = gap[0]
-                        dwsg = (final_c - nearest_wsg_top) / atr_val if pd.notna(atr_val) and atr_val != 0 and pd.notna(nearest_wsg_top) else np.nan
+                    # Proper single-ticker IPO-aware ATH/ATL slice up to latest_date_obj
+                    lookback_bars_dyn = min(252, len(c_series))
+                    latest_high = high_df.loc[:latest_date_obj, ticker].tail(lookback_bars_dyn).max()
+                    latest_low = safe_low.loc[:latest_date_obj, ticker].tail(lookback_bars_dyn).min()
 
-                        # Proper single-ticker IPO-aware ATH/ATL slice up to latest_date_obj
-                        lookback_bars_dyn = min(252, len(c_series))
-                        latest_high = high_df.loc[:latest_date_obj, ticker].tail(lookback_bars_dyn).max()
-                        latest_low = safe_low.loc[:latest_date_obj, ticker].tail(lookback_bars_dyn).min()
+                    pct_above_low = ((final_c - latest_low) / latest_low) * 100.0 if pd.notna(latest_low) and latest_low != 0 else np.nan
+                    pct_off_high = ((final_c - latest_high) / latest_high) * 100.0 if pd.notna(latest_high) and latest_high != 0 else np.nan
 
-                        pct_above_low = ((final_c - latest_low) / latest_low) * 100.0 if pd.notna(latest_low) and latest_low != 0 else np.nan
-                        pct_off_high = ((final_c - latest_high) / latest_high) * 100.0 if pd.notna(latest_high) and latest_high != 0 else np.nan
+                    if bench_close is not None:
+                        d_rs_off_high = rs_off_high_df.loc[latest_date_obj, ticker]
+                        d_rs_dist_21 = rs_dist_21ema_df.loc[latest_date_obj, ticker]
+                        d_rs_1w = rs_1w_chg_df.loc[latest_date_obj, ticker]
+                        d_rs_10d = rs_out_10d_df.loc[latest_date_obj, ticker]
+                        d_rs_20d = rs_out_20d_df.loc[latest_date_obj, ticker]
+                        d_rs_50d = rs_out_50d_df.loc[latest_date_obj, ticker]
+                    else:
+                        d_rs_off_high = d_rs_dist_21 = d_rs_1w = d_rs_10d = d_rs_20d = d_rs_50d = np.nan
 
-                        if bench_close is not None:
-                            d_rs_off_high = rs_off_high_df.loc[latest_date_obj, ticker]
-                            d_rs_dist_21 = rs_dist_21ema_df.loc[latest_date_obj, ticker]
-                            d_rs_1w = rs_1w_chg_df.loc[latest_date_obj, ticker]
-                            d_rs_10d = rs_out_10d_df.loc[latest_date_obj, ticker]
-                            d_rs_20d = rs_out_20d_df.loc[latest_date_obj, ticker]
-                            d_rs_50d = rs_out_50d_df.loc[latest_date_obj, ticker]
-                        else:
-                            d_rs_off_high = d_rs_dist_21 = d_rs_1w = d_rs_10d = d_rs_20d = d_rs_50d = np.nan
+                    industry = industry_map.get(stock_name, "Unclassified")
 
-                        industry = industry_map.get(stock_name, "Unclassified")
+                    ms_data = ms_dict.get(stock_name, {})
+                    ms_row = []
+                    for col in MS_COLS:
+                        val = ms_data.get(col, "N/A")
+                        if val == "":
+                            val = "N/A"
+                        ms_row.append(val)
 
-                        ms_data = ms_dict.get(stock_name, {})
-                        ms_row = []
-                        for col in MS_COLS:
-                            val = ms_data.get(col, "N/A")
-                            if val == "":
-                                val = "N/A"
-                            ms_row.append(val)
-
-                        results[scan_name].append([
-                            latest_date_str, stock_name, industry, round(avg_vol_crores, 2),
-                            round(trigger_adr, 2) if pd.notna(trigger_adr) else "N/A",
-                            round(d9, 2) if pd.notna(d9) else "N/A",
-                            round(d21, 2) if pd.notna(d21) else "N/A",
-                            round(d50, 2) if pd.notna(d50) else "N/A",
-                            round(dw4, 2) if pd.notna(dw4) else "N/A",
-                            round(dw10, 2) if pd.notna(dw10) else "N/A",
-                            round(dsg, 2) if pd.notna(dsg) else "N/A",
-                            round(dwsg, 2) if pd.notna(dwsg) else "N/A",
-                            round(pct_above_low, 2) if pd.notna(pct_above_low) else "N/A",
-                            round(pct_off_high, 2) if pd.notna(pct_off_high) else "N/A",
-                            round(d_rs_off_high, 2) if pd.notna(d_rs_off_high) else "N/A",
-                            round(d_rs_dist_21, 2) if pd.notna(d_rs_dist_21) else "N/A",
-                            round(d_rs_1w, 2) if pd.notna(d_rs_1w) else "N/A",
-                            round(d_rs_10d, 2) if pd.notna(d_rs_10d) else "N/A",
-                            round(d_rs_20d, 2) if pd.notna(d_rs_20d) else "N/A",
-                            round(d_rs_50d, 2) if pd.notna(d_rs_50d) else "N/A"
-                        ] + ms_row)
+                    results[scan_name].append([
+                        latest_date_str, stock_name, industry, round(avg_vol_crores, 2),
+                        round(trigger_adr, 2) if pd.notna(trigger_adr) else "N/A",
+                        round(d9, 2) if pd.notna(d9) else "N/A",
+                        round(d21, 2) if pd.notna(d21) else "N/A",
+                        round(d50, 2) if pd.notna(d50) else "N/A",
+                        round(dw4, 2) if pd.notna(dw4) else "N/A",
+                        round(dw10, 2) if pd.notna(dw10) else "N/A",
+                        round(dsg, 2) if pd.notna(dsg) else "N/A",
+                        round(dwsg, 2) if pd.notna(dwsg) else "N/A",
+                        round(pct_above_low, 2) if pd.notna(pct_above_low) else "N/A",
+                        round(pct_off_high, 2) if pd.notna(pct_off_high) else "N/A",
+                        round(d_rs_off_high, 2) if pd.notna(d_rs_off_high) else "N/A",
+                        round(d_rs_dist_21, 2) if pd.notna(d_rs_dist_21) else "N/A",
+                        round(d_rs_1w, 2) if pd.notna(d_rs_1w) else "N/A",
+                        round(d_rs_10d, 2) if pd.notna(d_rs_10d) else "N/A",
+                        round(d_rs_20d, 2) if pd.notna(d_rs_20d) else "N/A",
+                        round(d_rs_50d, 2) if pd.notna(d_rs_50d) else "N/A"
+                    ] + ms_row)
     except Exception:
         continue
 
