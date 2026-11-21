@@ -205,7 +205,7 @@ for ticker in tickers:
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
 
-        # Daily Support Gap (ATR)
+        # Daily Support Gap (Daily 14-ATR)
         c_vals = df['Close'].values
         l_vals = df['Low'].values
         active_gaps = []
@@ -231,7 +231,7 @@ for ticker in tickers:
                     nearest_sg_top = gap[0]
         dist_sg = (close - nearest_sg_top) / atr_14 if pd.notna(atr_14) and atr_14 != 0 and pd.notna(nearest_sg_top) else np.nan
 
-        # Weekly Support Gap (ATR)
+        # Weekly Support Gap (Weekly 14-ATR)
         wc_vals = weekly_df['Close'].values
         wl_vals = weekly_df['Low'].values
         w_active_gaps = []
@@ -255,7 +255,12 @@ for ticker in tickers:
                 if 0 <= diff < min_diff:
                     min_diff = diff
                     nearest_wsg_top = gap[0]
-        dist_wsg = (close - nearest_wsg_top) / atr_14 if pd.notna(atr_14) and atr_14 != 0 and pd.notna(nearest_wsg_top) else np.nan
+
+        w_tr1 = weekly_df['High'] - weekly_df['Low']
+        w_tr2 = (weekly_df['High'] - weekly_df['Close'].shift(1)).abs()
+        w_tr3 = (weekly_df['Low'] - weekly_df['Close'].shift(1)).abs()
+        w_atr_14 = pd.concat([w_tr1, w_tr2, w_tr3], axis=1).max(axis=1).rolling(14, min_periods=1).mean().iloc[-1] if not weekly_df.empty else np.nan
+        dist_wsg = (close - nearest_wsg_top) / w_atr_14 if pd.notna(w_atr_14) and w_atr_14 != 0 and pd.notna(nearest_wsg_top) else np.nan
 
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100 if d_bars >= 2 else np.nan
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100 if d_bars >= 6 else np.nan
