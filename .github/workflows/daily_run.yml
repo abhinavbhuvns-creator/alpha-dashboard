@@ -23,7 +23,7 @@ jobs:
           cache: 'pip'
 
       - name: Install required libraries
-        run: pip install yfinance gspread google-auth pandas numpy matplotlib
+        run: pip install --upgrade yfinance curl_cffi gspread google-auth pandas numpy matplotlib
 
       - name: 1. Run Daily Technicals (Both Morning and Afternoon)
         env:
