@@ -123,7 +123,7 @@ high_df = pd.DataFrame({t: data[t]['High'] for t in valid_cols}).ffill()
 # Count actual trading bars per stock since listing (for 20-day IPO cooling rule)
 bars_since_listing_df = data.xs('Close', axis=1, level=1).notna().cumsum()
 
-# 🟢 Align Benchmark and Calc Matrix for entire market (IPO-aware with min_periods=20)
+# Align Benchmark and Calc Matrix for entire market (IPO-aware with min_periods=20)
 if bench_close is not None:
     aligned_bench = bench_close.reindex(close_df.index).ffill()
 
@@ -202,13 +202,12 @@ for ticker in close_df.columns:
         is_p_nh = (high_df[ticker] >= tick_high_p) | (close_df[ticker] >= tick_close_p)
 
         rsbp_series = is_rs_nh & (~is_p_nh)       # Purple Dot (RS New High Before Price)
-        rs_blue_series = is_rs_nh & is_p_nh      # Blue Dot (RS New High Confirmed With Price)
+        rs_blue_series = is_rs_nh & is_p_nh       # Blue Dot (RS New High Confirmed With Price)
 
         purple_indices = np.where(rsbp_series.values)[0]
         blue_indices = np.where(rs_blue_series.values)[0]
 
         if len(purple_indices) > 0 and len(blue_indices) > 0:
-            # 🟢 FIX: Match length to n_total_bars (len(close_df)), NEVER len(df_tick)
             valid_after_rsbp = np.zeros(n_total_bars, dtype=bool)
             for p_idx in purple_indices:
                 sub_blues = blue_indices[(blue_indices > p_idx) & (blue_indices <= p_idx + 15)]
@@ -323,6 +322,7 @@ for ticker in all_shortlisted:
                         dw4 = dist_w4_df.loc[latest_date_obj, ticker]
                         dw10 = dist_w10_df.loc[latest_date_obj, ticker]
 
+                        # Daily Support Gap (ATR)
                         c_series = close_df.loc[:latest_date_obj, ticker].dropna().values
                         l_series = low_df.loc[:latest_date_obj, ticker].dropna().values
 
@@ -355,7 +355,34 @@ for ticker in all_shortlisted:
                         atr_val = atr_14_df.loc[latest_date_obj, ticker]
                         dsg = (final_c - nearest_sg_top) / atr_val if pd.notna(atr_val) and atr_val != 0 and pd.notna(nearest_sg_top) else np.nan
 
-                        # 🟢 FIX: Proper single-ticker IPO-aware ATH/ATL slice up to latest_date_obj
+                        # Weekly Support Gap (ATR)
+                        wc_series = close_df.loc[:latest_date_obj, ticker].resample('W-FRI').last().dropna().values
+                        wl_series = low_df.loc[:latest_date_obj, ticker].resample('W-FRI').min().dropna().values
+                        w_len = min(len(wc_series), len(wl_series))
+                        w_active_gaps = []
+                        for j in range(1, w_len):
+                            if wl_series[j] > wc_series[j - 1]:
+                                w_active_gaps.append([wl_series[j], wc_series[j - 1]])
+                            for k in range(len(w_active_gaps) - 1, -1, -1):
+                                if wc_series[j] < w_active_gaps[k][0]:
+                                    if wc_series[j] <= w_active_gaps[k][1]:
+                                        w_active_gaps.pop(k)
+                                    else:
+                                        w_active_gaps[k][0] = wc_series[j]
+                            if len(w_active_gaps) > 20:
+                                w_active_gaps.pop(0)
+
+                        nearest_wsg_top = np.nan
+                        if w_active_gaps:
+                            min_diff = float('inf')
+                            for gap in w_active_gaps:
+                                diff = final_c - gap[0]
+                                if 0 <= diff < min_diff:
+                                    min_diff = diff
+                                    nearest_wsg_top = gap[0]
+                        dwsg = (final_c - nearest_wsg_top) / atr_val if pd.notna(atr_val) and atr_val != 0 and pd.notna(nearest_wsg_top) else np.nan
+
+                        # Proper single-ticker IPO-aware ATH/ATL slice up to latest_date_obj
                         lookback_bars_dyn = min(252, len(c_series))
                         latest_high = high_df.loc[:latest_date_obj, ticker].tail(lookback_bars_dyn).max()
                         latest_low = safe_low.loc[:latest_date_obj, ticker].tail(lookback_bars_dyn).min()
@@ -392,6 +419,7 @@ for ticker in all_shortlisted:
                             round(dw4, 2) if pd.notna(dw4) else "N/A",
                             round(dw10, 2) if pd.notna(dw10) else "N/A",
                             round(dsg, 2) if pd.notna(dsg) else "N/A",
+                            round(dwsg, 2) if pd.notna(dwsg) else "N/A",
                             round(pct_above_low, 2) if pd.notna(pct_above_low) else "N/A",
                             round(pct_off_high, 2) if pd.notna(pct_off_high) else "N/A",
                             round(d_rs_off_high, 2) if pd.notna(d_rs_off_high) else "N/A",
@@ -411,7 +439,7 @@ print("\nExporting all formatted data to Unified Google Sheet...", flush=True)
 headers = [
     "Trigger Date", "Stock Symbol", "Industry Group", "Avg Rupee Vol (Cr)", "ADR %",
     "9 EMA (ATR)", "21 EMA (ATR)", "50 EMA (ATR)", "4W SMA (ATR)", "10W SMA (ATR)",
-    "Supp Gap (ATR)", "% above 52W Low", "% off 52W High",
+    "Supp Gap (ATR)", "Wk Supp Gap (ATR)", "% above 52W Low", "% off 52W High",
     "RS Line % off 52W High", "% Dist from RS 21 EMA", "RS Line 1W Change %",
     "RS Outperform (10D) %", "RS Outperform (20D) %", "RS Outperform (50D) %"
 ] + MS_COLS
