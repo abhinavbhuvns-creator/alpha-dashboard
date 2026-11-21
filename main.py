@@ -119,11 +119,9 @@ if nifty is not None and not close_data.empty:
     def calc_1_to_99_rank(row):
         return ((row.rank(pct=True) * 98.0) + 1.0).round(0)
 
-    # Latest daily cross-sectional ranks for Daily_Technicals
     latest_webster_ranks = calc_1_to_99_rank(webster_base.iloc[-1])
     latest_classic_ranks = calc_1_to_99_rank(classic_base.iloc[-1])
 
-    # Friday history tables
     fridays_idx = close_data.index[close_data.index.dayofweek == 4]
     webster_friday_ranks = webster_base.loc[fridays_idx].apply(calc_1_to_99_rank, axis=1)
     classic_friday_ranks = classic_base.loc[fridays_idx].apply(calc_1_to_99_rank, axis=1)
@@ -207,6 +205,7 @@ for ticker in tickers:
         dist_w4 = (close - wk_sma_4) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
         dist_w10 = (close - wk_sma_10) / atr_14 if pd.notna(atr_14) and atr_14 != 0 else np.nan
 
+        # Daily Support Gap (ATR)
         c_vals = df['Close'].values
         l_vals = df['Low'].values
         active_gaps = []
@@ -231,6 +230,32 @@ for ticker in tickers:
                     min_diff = diff
                     nearest_sg_top = gap[0]
         dist_sg = (close - nearest_sg_top) / atr_14 if pd.notna(atr_14) and atr_14 != 0 and pd.notna(nearest_sg_top) else np.nan
+
+        # Weekly Support Gap (ATR)
+        wc_vals = weekly_df['Close'].values
+        wl_vals = weekly_df['Low'].values
+        w_active_gaps = []
+        for j in range(1, len(wc_vals)):
+            if wl_vals[j] > wc_vals[j - 1]:
+                w_active_gaps.append([wl_vals[j], wc_vals[j - 1]])
+            for k in range(len(w_active_gaps) - 1, -1, -1):
+                if wc_vals[j] < w_active_gaps[k][0]:
+                    if wc_vals[j] <= w_active_gaps[k][1]:
+                        w_active_gaps.pop(k)
+                    else:
+                        w_active_gaps[k][0] = wc_vals[j]
+            if len(w_active_gaps) > 20:
+                w_active_gaps.pop(0)
+
+        nearest_wsg_top = np.nan
+        if w_active_gaps:
+            min_diff = float('inf')
+            for gap in w_active_gaps:
+                diff = close - gap[0]
+                if 0 <= diff < min_diff:
+                    min_diff = diff
+                    nearest_wsg_top = gap[0]
+        dist_wsg = (close - nearest_wsg_top) / atr_14 if pd.notna(atr_14) and atr_14 != 0 and pd.notna(nearest_wsg_top) else np.nan
 
         ret_1d = df['Close'].pct_change(periods=1).iloc[-1] * 100 if d_bars >= 2 else np.nan
         ret_1w = df['Close'].pct_change(periods=5).iloc[-1] * 100 if d_bars >= 6 else np.nan
@@ -311,7 +336,8 @@ for ticker in tickers:
             "50 EMA (ATR)": round(dist_50, 2) if pd.notna(dist_50) else "",
             "4W SMA (ATR)": round(dist_w4, 2) if pd.notna(dist_w4) else "",
             "10W SMA (ATR)": round(dist_w10, 2) if pd.notna(dist_w10) else "",
-            "Supp Gap (ATR)": round(dist_sg, 2) if pd.notna(dist_sg) else ""
+            "Supp Gap (ATR)": round(dist_sg, 2) if pd.notna(dist_sg) else "",
+            "Wk Supp Gap (ATR)": round(dist_wsg, 2) if pd.notna(dist_wsg) else ""
         }
 
         # STATIC CHART GEN
