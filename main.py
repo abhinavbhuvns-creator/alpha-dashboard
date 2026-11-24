@@ -27,7 +27,7 @@ creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(creds)
 
 # ==========================================
-# 2. READ UNIFIED MASTER SHEET & MARKETSMITH
+# 2. READ UNIFIED MASTER SHEET, MARKETSMITH, & QUARTERLY FUNDAMENTALS
 # ==========================================
 SINGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1A2fUfXGKXXQxzFnoR30cFVqtmb-28KTi4fR4N0e507g/edit?usp=sharing'
 spreadsheet = gc.open_by_url(SINGLE_SHEET_URL)
@@ -46,6 +46,8 @@ MS_COLS = [
     "Blue_Dot_Count"
 ]
 
+QF_COLS = ["Curr Qtr OPM %", "OPM YoY Chg (pp)", "OPM QoQ Chg (pp)"]
+
 try:
     master_ws = spreadsheet.worksheet(MASTER_TAB_NAME)
     df_master = pd.DataFrame(master_ws.get_all_records())
@@ -63,6 +65,17 @@ try:
         df_ms = pd.DataFrame(columns=['Symbol'])
 except Exception:
     df_ms = pd.DataFrame(columns=['Symbol'])
+
+try:
+    qf_ws = spreadsheet.worksheet("Quarterly_Fundamentals")
+    df_qf = pd.DataFrame(qf_ws.get_all_records())
+    if 'Symbol' in df_qf.columns:
+        df_qf['Symbol'] = df_qf['Symbol'].astype(str).str.strip().str.upper()
+        df_qf = df_qf[['Symbol'] + [c for c in QF_COLS if c in df_qf.columns]]
+    else:
+        df_qf = pd.DataFrame(columns=['Symbol'])
+except Exception:
+    df_qf = pd.DataFrame(columns=['Symbol'])
 
 tickers = (df_master['Symbol'] + '.NS').tolist()
 if '^NSEI' not in tickers:
@@ -449,12 +462,17 @@ if not df_ms.empty:
     for col in [c for c in df_ms.columns if c != 'Symbol']:
         df_final[col] = df_final[col].replace(r'^\s*$', np.nan, regex=True).fillna("N/A")
 
+if not df_qf.empty:
+    df_final = pd.merge(df_final, df_qf, on='Symbol', how='left')
+    for col in [c for c in df_qf.columns if c != 'Symbol']:
+        df_final[col] = df_final[col].replace(r'^\s*$', np.nan, regex=True).fillna("N/A")
+
 df_final = df_final.replace([np.inf, -np.inf], np.nan).fillna("")
 try:
     target_ws = spreadsheet.worksheet(TARGET_TAB_NAME)
     target_ws.clear()
 except Exception:
-    target_ws = spreadsheet.add_worksheet(title=TARGET_TAB_NAME, rows="2500", cols="75")
+    target_ws = spreadsheet.add_worksheet(title=TARGET_TAB_NAME, rows="2500", cols="80")
 
 sheet_output = [df_final.columns.values.tolist()] + df_final.values.tolist()
 target_ws.update(values=sheet_output, range_name='A1', value_input_option='USER_ENTERED')
