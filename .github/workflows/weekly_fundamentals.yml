@@ -1,0 +1,26 @@
+name: Weekly Quarterly Fundamentals (OPM%)
+
+on:
+  schedule:
+    - cron: '0 16 * * 0'  # Every Sunday at 9:30 PM IST
+  workflow_dispatch:
+
+jobs:
+  update-fundamentals:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install required libraries
+        run: pip install --upgrade yfinance curl_cffi gspread google-auth pandas numpy
+
+      - name: Run Quarterly OPM% Updater
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python update_fundamentals.py
